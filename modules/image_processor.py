@@ -1,5 +1,4 @@
 import os
-
 import cv2
 import numpy as np
 import torch
@@ -7,6 +6,8 @@ from PIL import Image
 from matplotlib import pyplot as plt
 from segment_anything import sam_model_registry, SamPredictor
 from rembg import remove
+
+
 
 # --- initialize the SAM model ---
 # https://github.com/facebookresearch/segment-anything/blob/main/notebooks/predictor_example.ipynb
@@ -17,6 +18,8 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 sam = sam_model_registry[MODEL_TYPE](checkpoint=SAM_CHECKPOINT)
 sam.to(device=device)
 sam_predictor = SamPredictor(sam)
+
+U2_Net_Enable = False
 
 
 def show_mask(mask, ax, random_color=False):
@@ -152,31 +155,6 @@ def get_roi_from_sam(image_path: str):
             plt.axis('off')
             plt.show()
 
-            # --- Fix: Resize the mask to match the original image dimensions ---
-            # The original image dimensions are image_rgb.shape[1] (width) and image_rgb.shape[0] (height)
-            # mask_resized = cv2.resize(best_mask.astype(np.uint8),
-            #                           (image_rgb.shape[1], image_rgb.shape[0]),
-            #                           interpolation=cv2.INTER_NEAREST)
-            # mask_resized = mask_resized.astype(bool)
-            #
-            # # --- Use the resized mask for visualization ---
-            # mask_image = np.zeros_like(image_rgb, dtype=np.uint8)
-            # mask_image[mask_resized] = [0, 255, 0]  # Use the resized mask
-            #
-            # # 创建一个半透明的覆盖层
-            # alpha = 0.5
-            # visualized_result = cv2.addWeighted(image_rgb, 1 - alpha, mask_image, alpha, 0)
-            #
-            # # 在可视化图像上绘制输入点
-            # for i, (px, py) in enumerate(input_points):
-            #     color = (0, 255, 0) if input_labels[i] == 1 else (0, 0, 255)
-            #     cv2.circle(visualized_result, (px, py), 5, color, -1)
-            #
-            # cv2.imshow("SAM Segmentation Result", cv2.cvtColor(visualized_result, cv2.COLOR_RGB2BGR))
-            # cv2.waitKey(0)
-            # cv2.destroyAllWindows()
-            # --- 可视化部分结束 ---
-
             # 找到掩码的最小包围框作为 ROI
             y_coords, x_coords = np.where(best_mask)
             if y_coords.size > 0 and x_coords.size > 0:
@@ -215,41 +193,29 @@ def extract_elements(image: np.ndarray, mask: np.ndarray):
     roi_image = image[ymin:ymax, xmin:xmax]
     roi_mask = mask[ymin:ymax, xmin:xmax]
 
-    # Create a 4-channel RGBA image from the cropped image
-    # The alpha channel is initialized to zeros (fully transparent)
-    extracted_element = np.zeros(
-        (roi_image.shape[0], roi_image.shape[1], 4),
-        dtype=np.uint8
-    )
+    if not U2_Net_Enable:
+        # Create a 4-channel RGBA image from the cropped image
+        # The alpha channel is initialized to zeros (fully transparent)
 
-    # Copy the RGB channels from the original cropped image
-    extracted_element[:, :, :3] = roi_image
+        extracted_element = np.zeros(
+            (roi_image.shape[0], roi_image.shape[1], 4),
+            dtype=np.uint8
+        )
 
-    # Set the alpha channel based on the cropped mask
-    # The mask is boolean (True/False), so we convert it to uint8 (0/1) and scale to 0-255
-    extracted_element[:, :, 3] = roi_mask.astype(np.uint8) * 255
+        # Copy the RGB channels from the original cropped image
+        extracted_element[:, :, :3] = roi_image
 
-    # # 转换为 PIL Image
-    # pil_image = Image.fromarray(cv2.cvtColor(roi_image, cv2.COLOR_BGR2RGB))
-    #
-    # # rembg for background removal
-    # output_image = remove(pil_image, alpha_matting_foreground_threshold=200)
-    # extracted_element = cv2.cvtColor(np.array(output_image), cv2.COLOR_RGB2BGRA)
+        # Set the alpha channel based on the cropped mask
+        # The mask is boolean (True/False), so we convert it to uint8 (0/1) and scale to 0-255
+        extracted_element[:, :, 3] = roi_mask.astype(np.uint8) * 255
+    else:
+        # 转换为 PIL Image
+        pil_image = Image.fromarray(cv2.cvtColor(roi_image, cv2.COLOR_BGR2RGB))
 
+        # rembg for background removal
+        output_image = remove(pil_image, alpha_matting_foreground_threshold=240)
+        extracted_element = cv2.cvtColor(np.array(output_image), cv2.COLOR_RGB2BGRA)
 
-    # # 使用抠图模型进行处理
-    # inputs = matting_processor(images=pil_image, return_tensors="pt").to(device)
-    # with torch.no_grad():
-    #     outputs = matting_model(**inputs)
-
-    # alpha_channel = outputs.alphas
-    # # 将 alpha 通道从张量转换为 numpy 数组并调整大小
-    # alpha_channel_np = alpha_channel.squeeze().cpu().numpy()
-    # alpha_channel_np = (alpha_channel_np * 255).astype(np.uint8)
-    #
-    # # 创建一个 4 通道的图像 (RGB + Alpha)
-    # extracted_element = cv2.cvtColor(roi_image, cv2.COLOR_BGR2BGRA)
-    # extracted_element[:, :, 3] = alpha_channel_np
 
     return extracted_element
 
@@ -272,9 +238,19 @@ def process_image(image_path: str, output_path: str = "output.png"):
             cv2.imwrite(output_path, extracted_element)
             print(f"Successfully extracted and saved to {output_path}")
 
-            # 可视化结果
-            cv2.namedWindow("Extracted Element", cv2.WINDOW_NORMAL)
-            cv2.imshow("Extracted Element", extracted_element)
+            if not U2_Net_Enable:
+                # --- 可视化模拟透明背景 ---
+                bg_image = np.full(extracted_element.shape, (128, 128, 128, 255), dtype=np.uint8) # 创建一个灰色的背景
+                bgr_channels = extracted_element[:, :, :3]
+                alpha_channel = extracted_element[:, :, 3]
+                alpha_mask = cv2.cvtColor(alpha_channel, cv2.COLOR_GRAY2BGR) # 将 Alpha 通道转换为 3 通道掩码，用于融合
+                blended_result = np.where(alpha_mask == 255, bgr_channels, bg_image[:, :, :3]) # 将前景（抠图结果）和背景融合
+
+                scaled_result, _ = resize_to_fit(blended_result)
+            else:
+                scaled_result, _ = resize_to_fit(extracted_element)
+
+            cv2.imshow("Extracted Element", scaled_result)
             cv2.waitKey(0)
             cv2.destroyAllWindows()
     else:
@@ -303,4 +279,4 @@ if __name__ == "__main__":
     #
     #     # 调用处理函数
     #     process_image(input_path, output_path)
-    process_image('datasets/test/drawing_0010.png', 'output/seg_drawing_0010.png')
+    process_image('datasets/test/drawing_0030.png', 'output/seg_drawing_0030.png')
