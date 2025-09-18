@@ -1,3 +1,5 @@
+import os
+
 import cv2
 import numpy as np
 import torch
@@ -5,13 +7,9 @@ from PIL import Image
 from matplotlib import pyplot as plt
 from segment_anything import sam_model_registry, SamPredictor
 from rembg import remove
-# from transformers import U2netForPortraitMatting, U2netForPortraitMattingProcessor
-# from transformers import AutoProcessor, AutoModel
 
-# --- 1. 初始化模型 ---
-# 可以根据你的设备选择 SAM 模型的 checkpoint
-# 请从 https://github.com/facebookresearch/segment-anything/blob/main/notebooks/predictor_example.ipynb 下载相应的 .pth 文件
-# 例如：sam_vit_h_4b8939.pth
+# --- initialize the SAM model ---
+# https://github.com/facebookresearch/segment-anything/blob/main/notebooks/predictor_example.ipynb
 SAM_CHECKPOINT = "weights/sam_vit_h_4b8939.pth"
 MODEL_TYPE = "vit_h"
 device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -20,14 +18,15 @@ sam = sam_model_registry[MODEL_TYPE](checkpoint=SAM_CHECKPOINT)
 sam.to(device=device)
 sam_predictor = SamPredictor(sam)
 
-# 初始化抠图模型
-# 可以使用 Hugging Face 的 U-2-Net
-
-# matting_processor = AutoProcessor.from_pretrained("BritishWerewolf/U-2-Net")
-# matting_model = AutoModel.from_pretrained('BritishWerewolf/U-2-Net', dtype = 'fp32')
-# matting_model.to(device)
 
 def show_mask(mask, ax, random_color=False):
+    """
+    Visualization Mask
+    :param mask:
+    :param ax:
+    :param random_color:
+    :return:
+    """
     if random_color:
         color = np.concatenate([np.random.random(3), np.array([0.6])], axis=0)
     else:
@@ -45,11 +44,64 @@ def show_points(coords, labels, ax, marker_size=375):
     ax.scatter(neg_points[:, 0], neg_points[:, 1], color='red', marker='*', s=marker_size, edgecolor='white',
                linewidth=1.25)
 
+
+def resize_to_fit(image, max_width=1280, max_height=720):
+    """
+    Resizes an image to fit within a maximum width and height, maintaining aspect ratio.
+    """
+    h, w = image.shape[:2]
+    scale_factor = min(max_width / w, max_height / h)
+
+    if scale_factor >= 1:
+        return image, 1.0  # No need to resize if it already fits
+
+    new_width = int(w * scale_factor)
+    new_height = int(h * scale_factor)
+
+    resized_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_AREA)
+    return resized_image, scale_factor
+
+
+input_points = []
+input_labels = []
+
+
+def on_mouse_click_scaled(event, x, y, flags, param):
+    original_image = param['original_image']
+    scale_factor = param['scale_factor']
+
+    # Convert mouse coordinates back to the original image's coordinates
+    original_x = int(x / scale_factor)
+    original_y = int(y / scale_factor)
+
+    if event == cv2.EVENT_LBUTTONDOWN or event == cv2.EVENT_RBUTTONDOWN:
+        if event == cv2.EVENT_LBUTTONDOWN:
+            input_points.append([original_x, original_y])
+            input_labels.append(1)  # Foreground point
+        else:
+            input_points.append([original_x, original_y])
+            input_labels.append(0)  # Background point
+
+        # Display points on the scaled image for visual feedback
+        image_with_points = param['scaled_image'].copy()
+        for i, (px, py) in enumerate(input_points):
+            scaled_x = int(px * scale_factor)
+            scaled_y = int(py * scale_factor)
+            color = (0, 255, 0) if input_labels[i] == 1 else (0, 0, 255)
+            cv2.circle(image_with_points, (scaled_x, scaled_y), 5, color, -1)
+
+        cv2.imshow("Select ROI (Left: FG, Right: BG)", image_with_points)
+
+
 def get_roi_from_sam(image_path: str):
     """
     使用 SAM 模型进行交互式 ROI 框选。
     左键点击添加前景点，右键点击添加背景点。
     """
+    global input_points, input_labels
+    input_points.clear()
+    input_labels.clear()
+
     image_bgr = cv2.imread(image_path)
     if image_bgr is None:
         print(f"Error: Unable to read image from {image_path}")
@@ -57,32 +109,16 @@ def get_roi_from_sam(image_path: str):
 
     image_rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
 
+    # Resize the image for display purposes only
+    scaled_image, scale_factor = resize_to_fit(image_bgr)
+
+    # feed the image to SAM
     sam_predictor.set_image(image_rgb)
 
-    input_points = []
-    input_labels = []
-
-    # todo: 防止图像尺寸过大超出屏幕范围，需要进行缩放显示，同时保证鼠标点击区域对应
-    def on_mouse_click(event, x, y, flags, param):
-        if event == cv2.EVENT_LBUTTONDOWN or event == cv2.EVENT_RBUTTONDOWN:
-            if event == cv2.EVENT_LBUTTONDOWN:
-                input_points.append([x, y])
-                input_labels.append(1)  # 前景点
-            else:
-                input_points.append([x, y])
-                input_labels.append(0)  # 背景点
-
-            # 在一个副本上绘制所有点，避免覆盖
-            image_with_points = param['image'].copy()
-            for i, (px, py) in enumerate(input_points):
-                color = (0, 255, 0) if input_labels[i] == 1 else (0, 0, 255)
-                cv2.circle(image_with_points, (px, py), 5, color, -1)
-
-            cv2.imshow("Select ROI (Left: FG, Right: BG)", image_with_points)
-
-    image_display = image_bgr.copy()
-    cv2.imshow("Select ROI (Left: FG, Right: BG)", image_display)
-    cv2.setMouseCallback("Select ROI (Left: FG, Right: BG)", on_mouse_click, param={'image': image_bgr})
+    cv2.imshow("Select ROI (Left: FG, Right: BG)", scaled_image)
+    cv2.setMouseCallback("Select ROI (Left: FG, Right: BG)", on_mouse_click_scaled,
+                         param={'original_image': image_bgr, 'scaled_image': scaled_image,
+                                'scale_factor': scale_factor})
     key = cv2.waitKey(0)
     cv2.destroyAllWindows()
 
@@ -98,16 +134,15 @@ def get_roi_from_sam(image_path: str):
                 multimask_output=True,
             )
 
-            # 如果没有生成任何掩码，则返回None
             if len(masks) == 0:
                 print("No mask generated by SAM.")
                 return None, None
 
-            # 找到得分最高的掩码
-            id = np.argmax(masks)
+            # find the best mask based on scores
+            # id = np.argmax(masks)
             best_mask = masks[np.argmax(scores)]
 
-            print(best_mask.shape)
+            # print(best_mask.shape)
 
             plt.figure(figsize=(15, 15))
             plt.imshow(image_rgb)
@@ -148,6 +183,14 @@ def get_roi_from_sam(image_path: str):
                 ymin, ymax = np.min(y_coords), np.max(y_coords)
                 xmin, xmax = np.min(x_coords), np.max(x_coords)
                 roi_box = (xmin, ymin, xmax, ymax)
+
+                roi_image_rgb = image_rgb[ymin:ymax, xmin:xmax]
+
+                plt.figure(figsize=(10, 10))
+                plt.imshow(roi_image_rgb)
+                plt.title("ROI Cropped Result", fontsize=18)
+                plt.axis('off')
+                plt.show()
                 return roi_box, best_mask
             else:
                 print("No mask found, please try again.")
@@ -158,23 +201,41 @@ def get_roi_from_sam(image_path: str):
 
 def extract_elements(image: np.ndarray, mask: np.ndarray):
     """
-    使用深度学习抠图模型，从 ROI 中提取元素。
+    Directly extracts elements from the original image using the SAM mask,
+    creating a transparent background.
     """
     # 裁剪 ROI 区域
-    ymin, ymax = np.min(np.where(mask)[0]), np.max(np.where(mask)[0])
-    xmin, xmax = np.min(np.where(mask)[1]), np.max(np.where(mask)[1])
+    y_coords, x_coords = np.where(mask)
+    if y_coords.size == 0 or x_coords.size == 0:
+        return None
+
+    ymin, ymax = np.min(y_coords), np.max(y_coords)
+    xmin, xmax = np.min(x_coords), np.max(x_coords)
 
     roi_image = image[ymin:ymax, xmin:xmax]
     roi_mask = mask[ymin:ymax, xmin:xmax]
 
-    # 转换为 PIL Image
-    pil_image = Image.fromarray(cv2.cvtColor(roi_image, cv2.COLOR_BGR2RGB))
+    # Create a 4-channel RGBA image from the cropped image
+    # The alpha channel is initialized to zeros (fully transparent)
+    extracted_element = np.zeros(
+        (roi_image.shape[0], roi_image.shape[1], 4),
+        dtype=np.uint8
+    )
 
-    # rembg for background removal
-    output_image = remove(pil_image, alpha_matting_foreground_threshold=220)
-    extracted_element = cv2.cvtColor(np.array(output_image), cv2.COLOR_RGB2BGRA)
+    # Copy the RGB channels from the original cropped image
+    extracted_element[:, :, :3] = roi_image
 
-    # todo: 直接使用SAM分割的结果，rembg的结果会导致抠图程度过深，丢失细节
+    # Set the alpha channel based on the cropped mask
+    # The mask is boolean (True/False), so we convert it to uint8 (0/1) and scale to 0-255
+    extracted_element[:, :, 3] = roi_mask.astype(np.uint8) * 255
+
+    # # 转换为 PIL Image
+    # pil_image = Image.fromarray(cv2.cvtColor(roi_image, cv2.COLOR_BGR2RGB))
+    #
+    # # rembg for background removal
+    # output_image = remove(pil_image, alpha_matting_foreground_threshold=200)
+    # extracted_element = cv2.cvtColor(np.array(output_image), cv2.COLOR_RGB2BGRA)
+
 
     # # 使用抠图模型进行处理
     # inputs = matting_processor(images=pil_image, return_tensors="pt").to(device)
@@ -195,7 +256,7 @@ def extract_elements(image: np.ndarray, mask: np.ndarray):
 
 def process_image(image_path: str, output_path: str = "output.png"):
     """
-    主处理函数。
+    Processes a single image and saves the result.
     """
     print("Step 1: Selecting ROI using SAM...")
     roi_box, mask = get_roi_from_sam(image_path)
@@ -208,11 +269,11 @@ def process_image(image_path: str, output_path: str = "output.png"):
         extracted_element = extract_elements(image, mask)
 
         if extracted_element is not None:
-            # 保存抠出的元素为 PNG 格式，以支持透明度
             cv2.imwrite(output_path, extracted_element)
             print(f"Successfully extracted and saved to {output_path}")
 
             # 可视化结果
+            cv2.namedWindow("Extracted Element", cv2.WINDOW_NORMAL)
             cv2.imshow("Extracted Element", extracted_element)
             cv2.waitKey(0)
             cv2.destroyAllWindows()
@@ -221,6 +282,25 @@ def process_image(image_path: str, output_path: str = "output.png"):
 
 
 if __name__ == "__main__":
-    # 使用示例
-    # 请将 'path/to/your/drawing.jpg' 替换为你自己的图像路径
-    process_image('datasets/test/drawing_0006.png', 'output/output.png')
+    input_dir = 'datasets/test'
+    output_dir = 'output/'
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    file_list = os.listdir(input_dir)
+    image_files = sorted([f for f in file_list if f.endswith('.png')])
+
+    # 遍历所有图片文件
+    # for filename in image_files:
+    #     input_path = os.path.join(input_dir, filename)
+    #
+    #     # 自动生成输出文件名，例如 'drawing_0001.png' -> 'seg_drawing_0001.png'
+    #     output_filename = f'seg_{filename}'
+    #     output_path = os.path.join(output_dir, output_filename)
+    #
+    #     print(f"Processing file: {input_path}")
+    #
+    #     # 调用处理函数
+    #     process_image(input_path, output_path)
+    process_image('datasets/test/drawing_0010.png', 'output/seg_drawing_0010.png')
