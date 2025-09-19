@@ -37,7 +37,7 @@ PAINT_MODE = +1  # +1=补（前景），-1=擦（背景）
 # sam.to(device=device)
 # sam_predictor = SamPredictor(sam)
 
-U2_Net_Enable = False
+# U2_Net_Enable = False
 
 
 def _figure_to_bgr(fig) -> np.ndarray:

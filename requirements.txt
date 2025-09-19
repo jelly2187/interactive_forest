@@ -1,6 +1,0 @@
-opencv-python
-numpy
-torch
-pillow
-rembg
-onnxruntime
