@@ -1,3 +1,5 @@
-/datasets/
-/output/
-/weights/
+/assets/datasets/
+/output
+/.idea
+/static
+/cv_service/app/models
