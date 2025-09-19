@@ -1,5 +1,5 @@
 /assets/datasets/
-/output
-/static/videos/
-/cv_service/app/models
+/debug/output
+/assets/static/videos/
+/apps/cv_service/app/models
 /.idea/

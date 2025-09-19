@@ -6,9 +6,9 @@ import numpy as np
 from matplotlib import pyplot as plt
 from matplotlib.patches import Rectangle
 
-from cv_service.app.services.SAM import show_mask, show_points
-from cv_service.app.services.utils import resize_to_fit, _figure_to_bgr
-from cv_service.app.services.postprocess import feather_edges, make_output_path, save_rgba_soft
+from apps.cv_service.app.services.SAM import show_mask, show_points
+from apps.cv_service.app.services.utils import resize_to_fit, _figure_to_bgr
+from apps.cv_service.app.services.postprocess import feather_edges, make_output_path, save_rgba_soft
 
 
 def _draw_boxes_overlay(scaled_img, scale_factor, boxes_xyxy):
@@ -497,7 +497,7 @@ def process_image(image_path, output_dir, sam_predictor, top_n, tile_max_h):
         alpha = feather_edges(refined, radius_px=6)
 
         # 5) 导出 RGBA（每个框单独文件）
-        out_path = make_output_path(image_path, "output", i)
+        out_path = make_output_path(image_path, output_dir, i)
         # save_rgba(image_bgr, refined, out_path)
         save_rgba_soft(image_bgr, alpha, out_path)
         print(f"  - saved: {out_path}")

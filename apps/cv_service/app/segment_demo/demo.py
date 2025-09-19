@@ -1,5 +1,5 @@
 # ==== Globals & Utilities ====
-from cv_service.app.routers.segment import process_image
+from apps.cv_service.app.routers.segment import process_image
 
 input_points, input_labels = [], []
 undo_stack, redo_stack = [], []
@@ -17,12 +17,12 @@ PAINTING = False
 PAINT_MODE = +1  # +1=补（前景），-1=擦（背景）
 
 if __name__ == "__main__":
-    import argparse, os, cv2, numpy as np, torch
+    import argparse, torch
     from segment_anything import sam_model_registry, SamPredictor
 
     parser = argparse.ArgumentParser(description="Kids Art • Single Image Segmentation (SAM + Brush Refine)")
     parser.add_argument("--image", "-i", help="Path to input image (e.g., /path/to/paper.jpg)")
-    parser.add_argument("--out", "-o", default="./outputs", help="Output directory for cutouts (PNG with alpha)")
+    parser.add_argument("--out", "-o", default="./debug/output", help="Output directory for cutouts (PNG with alpha)")
     parser.add_argument("--weights", "-w", help="Path to SAM checkpoint (e.g., sam_vit_h_4b8939.pth)")
     parser.add_argument("--model-type", default="vit_h", choices=["vit_h", "vit_l", "vit_b"], help="SAM model type")
     parser.add_argument("--device", default=None, choices=[None, "cuda", "cpu"], help="Force device (default auto)")
@@ -39,7 +39,7 @@ if __name__ == "__main__":
     print(f"[SAM] loading {args.model_type} from {args.weights} on {device} ...")
     # --- initialize the SAM model ---
     # https://github.com/facebookresearch/segment-anything/blob/main/notebooks/predictor_example.ipynb
-    SAM_CHECKPOINT = "cv_service/app/models/sam_vit_h_4b8939.pth"
+    SAM_CHECKPOINT = "apps/cv_service/app/models/sam_vit_h_4b8939.pth"
     # MODEL_TYPE = "vit_h"
     # device = "cuda" if torch.cuda.is_available() else "cpu"
     #
