@@ -1,3 +1,11 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+Function used to display the segmentation effect
+Author: Jelly
+Date: 2025-09-20
+"""
 import numpy as np
 
 

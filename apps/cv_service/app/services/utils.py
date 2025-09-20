@@ -1,3 +1,9 @@
+'''
+Related functions used for cv2.imshow() display during debugging
+Author: Jelly
+Date: 2025-09-20
+'''
+
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt

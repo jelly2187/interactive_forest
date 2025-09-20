@@ -1,0 +1,51 @@
+"""
+请求/响应的数据模型（Pydantic）
+"""
+from typing import List, Optional, Tuple
+from pydantic import BaseModel, Field
+
+# ---- 会话初始化 ----
+class InitRequest(BaseModel):
+    image_path: Optional[str] = None       # 后端可读路径（二选一）
+    image_b64: Optional[str] = None        # dataURL 或纯base64（二选一）
+    image_name: Optional[str] = None       # 可用于命名，如 drawing_0030.png
+    keep_session: bool = True
+
+class InitResponse(BaseModel):
+    session_id: str
+    width: int
+    height: int
+    image_name: str
+
+# ---- 每个 ROI 的分割（候选） ----
+class SegmentRequest(BaseModel):
+    session_id: str
+    points: List[Tuple[float, float]] = Field(default_factory=list)   # 原图坐标
+    labels: List[int] = Field(default_factory=list)                   # 1=FG,0=BG
+    box: Tuple[float, float, float, float]                            # x1,y1,x2,y2
+    multimask: bool = True
+    top_n: int = 3
+    smooth: bool = True
+
+class MaskInfo(BaseModel):
+    mask_id: str
+    score: float
+    path: str
+
+class SegmentResponse(BaseModel):
+    masks: List[MaskInfo]
+    width: int
+    height: int
+
+# ---- 导出单个 ROI 的最终 PNG ----
+class ExportROIRequest(BaseModel):
+    session_id: str
+    mask_id: Optional[str] = None      # 用 /sam/segment 的候选ID
+    roi_index: int = 1                 # 用于命名 seg_<stem>_roi_<i>.png
+    feather_px: int = 0                # >0 时做柔化边缘
+    mask_png_b64: Optional[str] = None # 可直接上传最终掩码（例如前端笔刷微调后）
+                                       # 二选一：mask_id 或 mask_png_b64
+
+class ExportROIResponse(BaseModel):
+    sprite_path: str
+    bbox: dict

@@ -1,5 +1,7 @@
 /assets/datasets/
 /debug/output
-/assets/static/videos/
+/assets/backgrounds/
 /apps/cv_service/app/models
 /.idea/
+/apps/desktop/node_modules/
+/apps/desktop/renderer/public/

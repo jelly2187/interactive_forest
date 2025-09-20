@@ -906,28 +906,28 @@ def process_image_old(image_path: str, output_path: str = "output.png"):
         print("ROI selection failed or was cancelled.")
 
 
-# if __name__ == "__main__":
-#     input_dir = 'datasets/test'
-#     output_dir = 'output/'
-# 
-#     if not os.path.exists(output_dir):
-#         os.makedirs(output_dir)
-# 
-#     file_list = os.listdir(input_dir)
-#     image_files = sorted([f for f in file_list if f.endswith('.png')])
-# 
-#     # 遍历所有图片文件
-#     # for filename in image_files:
-#     #     input_path = os.path.join(input_dir, filename)
-#     #
-#     #     # 自动生成输出文件名，例如 'drawing_0001.png' -> 'seg_drawing_0001.png'
-#     #     output_filename = f'seg_{filename}'
-#     #     output_path = os.path.join(output_dir, output_filename)
-#     #
-#     #     print(f"Processing file: {input_path}")
-#     #
-#     #     # 调用处理函数
-#     #     process_image(input_path, output_path)
-#     process_image('assets/datasets/test/drawing_0030.png', 'output/seg_drawing_0030.png')
+if __name__ == "__main__":
+    input_dir = 'datasets/test'
+    output_dir = 'output/'
+
+    if not os.path.exists(output_dir):
+        os.makedirs(output_dir)
+
+    file_list = os.listdir(input_dir)
+    image_files = sorted([f for f in file_list if f.endswith('.png')])
+
+    # 遍历所有图片文件
+    # for filename in image_files:
+    #     input_path = os.path.join(input_dir, filename)
+    #
+    #     # 自动生成输出文件名，例如 'drawing_0001.png' -> 'seg_drawing_0001.png'
+    #     output_filename = f'seg_{filename}'
+    #     output_path = os.path.join(output_dir, output_filename)
+    #
+    #     print(f"Processing file: {input_path}")
+    #
+    #     # 调用处理函数
+    #     process_image(input_path, output_path)
+    process_image('assets/datasets/test/drawing_0030.png', 'output/seg_drawing_0030.png')
 
 '''

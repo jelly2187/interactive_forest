@@ -1,3 +1,7 @@
+"""
+掩码平滑、生成软边 alpha、保存 RGBA、以及命名工具
+
+"""
 import os
 from pathlib import Path
 
