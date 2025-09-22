@@ -17,7 +17,7 @@ export function setupImageScene(app: PIXI.Application, tex: PIXI.Texture, W:numb
 
   return {
     container: root, imgSprite: img,
-    toImgCoords(g: PIXI.IPointData){ // 全局坐标 -> 原图坐标
+    toImgCoords(g: PIXI.PointData){ // 全局坐标 -> 原图坐标
       const s = img.scale.x; const ox = img.position.x; const oy = img.position.y;
       return { x: (g.x - ox)/s, y: (g.y - oy)/s };
     },

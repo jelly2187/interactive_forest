@@ -17,6 +17,15 @@ from ..services.postprocess import make_output_path
 router = APIRouter(prefix="/sam", tags=["sam"])
 engine = SamEngine()
 
+# ---- 0) 获取当前活动sessions（调试用）----
+@router.get("/sessions")
+def list_sessions():
+    """列出当前活动的会话，用于调试"""
+    return {
+        "active_sessions": list(engine.sessions.keys()),
+        "session_count": len(engine.sessions)
+    }
+
 # ---- 1) 初始化会话 ----
 @router.post("/init", response_model=InitResponse)
 def init(req: InitRequest):
@@ -30,11 +39,22 @@ def init(req: InitRequest):
 @router.post("/segment", response_model=SegmentResponse)
 def segment(req: SegmentRequest):
     try:
+        # 添加session存在性检查和详细错误信息
+        if req.session_id not in engine.sessions:
+            available_sessions = list(engine.sessions.keys())
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Session not found: {req.session_id}. Available sessions: {available_sessions}. "
+                       f"Note: Sessions are lost when server restarts. Please call /sam/init again."
+            )
+        
         outs, (w, h) = engine.segment(
             req.session_id, req.points, req.labels, req.box, req.multimask, req.top_n, req.smooth
         )
         masks = [MaskInfo(mask_id=Path(p).stem, score=s, path=p) for (p, s) in outs]
         return SegmentResponse(masks=masks, width=w, height=h)
+    except HTTPException:
+        raise  # 重新抛出HTTP异常
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 

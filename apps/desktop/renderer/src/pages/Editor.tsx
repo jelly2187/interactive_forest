@@ -30,7 +30,7 @@ export default function Editor(){
     const app = new PIXI.Application({ resizeTo: window, backgroundColor:0x000000, antialias:true });
     setApp(app);
     if(holderRef.current) holderRef.current.appendChild(app.view as HTMLCanvasElement);
-    return ()=>app.destroy(true,{children:true, texture:true, baseTexture:true});
+    return ()=>app.destroy(true);
   },[]);
 
   async function loadImageFromFile(f: File){

@@ -43,7 +43,7 @@ export default function Stage(){
     }
     loadSprites().catch(console.error);
 
-    return ()=>{ window.removeEventListener("resize", layout); app.destroy(true,{children:true, texture:true, baseTexture:true}); };
+    return ()=>{ window.removeEventListener("resize", layout); app.destroy(true); };
   },[]);
 
   return <div className="page"><div className="main"><div className="canvas-holder" ref={ref}/></div></div>;

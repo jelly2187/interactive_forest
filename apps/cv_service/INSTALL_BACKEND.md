@@ -3,7 +3,7 @@
 ## 1) 安装
 ```bash
 cd cv_service
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate (or create conda environment)
 pip install -r requirements.txt
 pip install git+https://github.com/facebookresearch/segment-anything.git
 ```
@@ -16,7 +16,7 @@ pip install git+https://github.com/facebookresearch/segment-anything.git
 
 ## 3) 启动
 ```bash
-python -m uvicorn app.main:app --reload --port 7001
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 7001
 ```
 
 ## 4) 自检

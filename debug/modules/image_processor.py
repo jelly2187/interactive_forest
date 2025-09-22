@@ -641,6 +641,7 @@ def process_image(image_path, output_dir):
 
         # 2) 框内点选
         pts, labs = point_select_for_box(image_bgr, box)
+        print(pts)
         if pts is None:
             print("  - skipped by user.")
             continue
@@ -698,7 +699,7 @@ if __name__ == "__main__":
     print(f"[SAM] loading {args.model_type} from {args.weights} on {device} ...")
     # --- initialize the SAM model ---
     # https://github.com/facebookresearch/segment-anything/blob/main/notebooks/predictor_example.ipynb
-    SAM_CHECKPOINT = "cv_service/app/models/sam_vit_h_4b8939.pth"
+    SAM_CHECKPOINT = "E:\\Desktop\\workplace\\xbotpark\\interactive_forest\\apps\\cv_service\\app\\models\\sam_vit_h_4b8939.pth"
     # MODEL_TYPE = "vit_h"
     # device = "cuda" if torch.cuda.is_available() else "cpu"
     #
@@ -711,7 +712,7 @@ if __name__ == "__main__":
 
     # ---- 读取图片 ----
     # image_path = args.image
-    image_path = 'assets/datasets/test/drawing_0007.png'
+    image_path = 'E:/Desktop/workplace/xbotpark/interactive_forest/assets/datasets/test/drawing_0006.png'
     process_image(image_path, args.out)
 
     print("[Done] All selected ROIs processed.")

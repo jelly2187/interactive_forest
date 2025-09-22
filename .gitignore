@@ -1,7 +1,12 @@
 /assets/datasets/
-/debug/output
 /assets/backgrounds/
 /apps/cv_service/app/models
 /.idea/
 /apps/desktop/node_modules/
 /apps/desktop/renderer/public/
+/apps/cv_service/app/routers/__pycache__/
+__pycache__/
+*.png
+package-lock.json
+/.vscode/
+.env

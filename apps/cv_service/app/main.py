@@ -44,6 +44,3 @@ app.mount("/files", StaticFiles(directory=str(OUTPUT_DIR)), name="files")
 @app.get("/health")
 def health():
     return {"ok": True, "service": "kids-art-cv-sam", "version": "1.1.0"}
-
-
-# todo: 后端待完整调试，目前加载图片等功能仍然未完善

@@ -7,19 +7,41 @@ function createWindow() {
     height: 800,
     backgroundColor: "#000000",
     autoHideMenuBar: true,
-    fullscreen: true,
+    // fullscreen: true,  // 暂时注释掉全屏模式，便于调试
     webPreferences: {
       contextIsolation: true,
+      enableRemoteModule: false,
+      nodeIntegration: false,
       preload: path.join(__dirname, "preload.js")
     }
   });
 
-  const devUrl = process.env.VITE_DEV_URL;
+  // 添加调试信息
+  console.log("Environment variables:");
+  console.log("VITE_DEV_URL:", process.env.VITE_DEV_URL);
+  console.log("NODE_ENV:", process.env.NODE_ENV);
+
+  const devUrl = process.env.VITE_DEV_URL || "http://localhost:5173";
+  console.log("Loading URL:", devUrl);
+
   if (devUrl) {
     win.loadURL(devUrl);
+    // 开发模式下打开DevTools
+    win.webContents.openDevTools();
   } else {
-    win.loadFile(path.join(__dirname, "../renderer/dist/index.html"));
+    const indexPath = path.join(__dirname, "../renderer/dist/index.html");
+    console.log("Loading file:", indexPath);
+    win.loadFile(indexPath);
   }
+
+  // 添加错误处理
+  win.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
+    console.error('Failed to load:', validatedURL, errorCode, errorDescription);
+  });
+
+  win.webContents.on('dom-ready', () => {
+    console.log('DOM ready');
+  });
 }
 
 app.whenReady().then(createWindow);
