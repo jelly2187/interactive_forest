@@ -45,7 +45,27 @@ class ExportROIRequest(BaseModel):
     feather_px: int = 0                # >0 时做柔化边缘
     mask_png_b64: Optional[str] = None # 可直接上传最终掩码（例如前端笔刷微调后）
                                        # 二选一：mask_id 或 mask_png_b64
+    roi_box: Optional[Tuple[float, float, float, float]] = None  # ROI坐标 (x, y, width, height)
 
 class ExportROIResponse(BaseModel):
     sprite_path: str
     bbox: dict
+
+# ---- 画笔删补接口 ----
+class BrushStroke(BaseModel):
+    x: float
+    y: float
+    brush_size: float
+    brush_mode: str  # 'add' 或 'erase'
+
+class BrushRefinementRequest(BaseModel):
+    session_id: str
+    mask_id: str  # 基础mask的ID
+    strokes: List[BrushStroke]  # 画笔操作序列
+    roi_box: Optional[Tuple[float, float, float, float]] = None  # ROI坐标 (x, y, width, height)
+
+class BrushRefinementResponse(BaseModel):
+    refined_mask_id: str
+    refined_mask_path: str
+    width: int
+    height: int

@@ -48,29 +48,35 @@ def export_single(image_bgr: np.ndarray,
                   *,
                   feather_px: int = 0):
     """
-    你当前主流程：每个 ROI 得到单元素掩码，直接导出到 seg_<stem>_roi_<i>.png
+    导出ROI区域内的分割结果，使用mask作为透明度通道
+    - image_bgr: ROI区域的原图
+    - mask01: ROI区域的mask (0/1 或 0/255)
+    - 输出: 整个ROI区域的RGBA图像，mask区域保留原图，非mask区域透明
     """
     m = (mask01 > 0).astype(np.uint8)
     if m.sum() == 0:
         raise ValueError("export_single: empty mask")
 
-    ys, xs = np.where(m > 0)
-    ymin, ymax = int(ys.min()), int(ys.max())
-    xmin, xmax = int(xs.min()), int(xs.max())
+    # 确保image_bgr和mask01的尺寸匹配
+    if image_bgr.shape[:2] != mask01.shape[:2]:
+        raise ValueError(f"Image shape {image_bgr.shape[:2]} doesn't match mask shape {mask01.shape[:2]}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
     if feather_px and feather_px > 0:
+        # 使用柔化边缘
         alpha = feather_edges(m, radius_px=feather_px)
-        crop_rgba = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2BGRA)
-        crop_rgba = crop_rgba[ymin:ymax+1, xmin:xmax+1]
-        crop_alpha = alpha[ymin:ymax+1, xmin:xmax+1]
-        crop_rgba[:, :, 3] = crop_alpha
-        cv2.imwrite(str(out_path), crop_rgba)
+        rgba = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2BGRA)
+        rgba[:, :, 3] = alpha
+        cv2.imwrite(str(out_path), rgba)
     else:
-        crop_im = image_bgr[ymin:ymax+1, xmin:xmax+1]
-        crop_mk = m[ymin:ymax+1, xmin:xmax+1]
-        save_rgba(crop_im, crop_mk, str(out_path))
+        # 直接使用mask作为alpha通道
+        save_rgba(image_bgr, m, str(out_path))
+
+    # 计算实际内容的边界框（用于定位）
+    ys, xs = np.where(m > 0)
+    ymin, ymax = int(ys.min()), int(ys.max())
+    xmin, xmax = int(xs.min()), int(xs.max())
 
     return {
         "sprite_path": str(out_path),
