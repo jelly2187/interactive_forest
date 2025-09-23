@@ -1337,23 +1337,25 @@ export default function ControlPanel() {
             height: "100vh",
             backgroundColor: "#1a1a2e",
             color: "white",
-            display: "flex",
-            flexDirection: "column" // 修改：改为垂直布局
+            display: "flex"
         }}>
-            {/* 顶部工具栏 - 修复：让其能够适应窗口拉伸 */}
+            {/* 左侧工作区 - 减少空间占用 */}
             <div style={{
-                width: "100%", // 修复：占满整个宽度
-                padding: "15px",
-                backgroundColor: "#2a2a3e",
-                borderBottom: "2px solid #4a4a6e",
+                width: "55%", // 修改：从flex:1改为固定比例，减少左侧空间
                 display: "flex",
-                alignItems: "center",
-                justifyContent: "space-between", // 修复：让内容分布到两端
-                gap: "15px",
-                flexShrink: 0 // 防止被压缩
+                flexDirection: "column"
             }}>
-                <div style={{ display: "flex", alignItems: "center", gap: "15px" }}>
-                    <h2 style={{ margin: 0, whiteSpace: "nowrap" }}>🎨 Interactive Forest 控制台</h2>
+                {/* 工具栏 */}
+                <div style={{
+                    padding: "15px",
+                    backgroundColor: "#2a2a3e",
+                    borderBottom: "2px solid #4a4a6e",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: "15px",
+                    flexWrap: "wrap"
+                }}>
+                    <h2 style={{ margin: 0 }}>🎨 Interactive Forest 控制台</h2>
 
                     {/* 服务器状态 */}
                     <div style={{
@@ -1363,55 +1365,19 @@ export default function ControlPanel() {
                         padding: "6px 12px",
                         backgroundColor: serverStatus === 'online' ? "#4CAF50" : serverStatus === 'offline' ? "#f44336" : "#FF9800",
                         borderRadius: "15px",
-                        fontSize: "12px",
-                        whiteSpace: "nowrap"
+                        fontSize: "12px"
                     }}>
                         <div style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: "white" }} />
                         {serverStatus === 'checking' ? '检查中...' :
                             serverStatus === 'online' ? 'SAM在线' : 'SAM离线'}
                     </div>
-                </div>
 
-                {/* 工作流步骤指示器 */}
-                <div style={{ display: "flex", gap: "8px" }}>
-                    {['upload', 'roi_selection', 'segmentation', 'candidates', 'optimization', 'integration'].map((step, index) => (
-                        <div
-                            key={step}
-                            style={{
-                                padding: "4px 10px",
-                                borderRadius: "15px",
-                                fontSize: "11px",
-                                backgroundColor: currentStep === step ? "#2196F3" : "#555",
-                                border: currentStep === step ? "2px solid #64B5F6" : "1px solid #777",
-                                cursor: "pointer",
-                                whiteSpace: "nowrap",
-                                transition: "all 0.2s ease"
-                            }}
-                            onClick={() => {
-                                // 允许点击回到之前的步骤
-                                if (index <= ['upload', 'roi_selection', 'segmentation', 'candidates', 'optimization', 'integration'].indexOf(currentStep)) {
-                                    setCurrentStep(step as any);
-                                }
-                            }}
-                        >
-                            {index + 1}. {step === 'upload' ? '上传' :
-                                step === 'roi_selection' ? 'ROI选择' :
-                                    step === 'segmentation' ? '分割' :
-                                        step === 'candidates' ? '候选' :
-                                            step === 'optimization' ? '优化' : '集成'}
-                        </div>
-                    ))}
-                </div>
-            </div>
-
-            {/* 主工作区 - 修改为水平布局 */}
-            <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-                {/* 左侧工作区 - 减少空间占用 */}
-                <div style={{
-                    width: "55%", // 修改：从flex:1改为固定比例，减少左侧空间
-                    display: "flex",
-                    flexDirection: "column"
-                }}>
+                    {/* 工作流步骤指示器 */}
+                    <div style={{ display: "flex", gap: "10px", marginLeft: "auto" }}>
+                        {['upload', 'roi_selection', 'segmentation', 'candidates', 'optimization', 'integration'].map((step, index) => (
+                            <div
+                                key={step}
+                                style={{
                                     padding: "4px 12px",
                                     borderRadius: "15px",
                                     fontSize: "11px",
