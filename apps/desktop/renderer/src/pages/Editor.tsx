@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { apiService, type Point, type SegmentationResponse } from "../services/apiService";
 
-interface SegmentationResult {
-  mask: string; // base64 encoded mask
-  bbox: [number, number, number, number];
-  score: number;
-  session_id: string;
-}
+// interface SegmentationResult {
+//   mask: string; // base64 encoded mask
+//   bbox: [number, number, number, number];
+//   score: number;
+//   session_id: string;
+// }
 
 export default function Editor() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -16,7 +16,10 @@ export default function Editor() {
   const [imageFile, setImageFile] = useState<File | null>(null);
   const [points, setPoints] = useState<Point[]>([]);
   const [isLoading, setIsLoading] = useState(false);
-  const [segmentationResult, setSegmentationResult] = useState<SegmentationResult | null>(null);
+  // 将状态类型调整为 API 返回数据的 data 部分
+  const [segmentationResult, setSegmentationResult] = useState<NonNullable<SegmentationResponse["data"]> | null>(null);
+  // 新增：当前选中掩码索引
+  const [selectedMaskIndex, setSelectedMaskIndex] = useState<number>(0);
   const [error, setError] = useState<string | null>(null);
   const [canvasScale, setCanvasScale] = useState(1);
   const [canvasOffset, setCanvasOffset] = useState({ x: 0, y: 0 });
@@ -47,11 +50,14 @@ export default function Editor() {
 
       ctx.drawImage(image, offsetX, offsetY, scaledWidth, scaledHeight);
 
-      // 绘制分割结果
-      if (segmentationResult && segmentationResult.mask) {
+      // 按选中索引绘制分割结果
+      if (segmentationResult && segmentationResult.masks && segmentationResult.masks.length > 0) {
+        const masks = segmentationResult.masks;
+        const selIdx = Math.min(Math.max(selectedMaskIndex, 0), masks.length - 1);
+        const maskInfo = masks[selIdx];
         try {
-          // 创建mask图像
           const maskImg = new Image();
+          maskImg.crossOrigin = 'anonymous';
           maskImg.onload = () => {
             ctx.save();
             ctx.globalAlpha = 0.6;
@@ -59,7 +65,7 @@ export default function Editor() {
             ctx.drawImage(maskImg, offsetX, offsetY, scaledWidth, scaledHeight);
             ctx.restore();
           };
-          maskImg.src = `data:image/png;base64,${segmentationResult.mask}`;
+          maskImg.src = maskInfo.path;
         } catch (error) {
           console.error('Error loading mask image:', error);
         }
@@ -91,7 +97,7 @@ export default function Editor() {
       ctx.textAlign = 'center';
       ctx.fillText('点击上传图片或拖拽图片到这里', canvas.width / 2, canvas.height / 2);
     }
-  }, [image, points, segmentationResult]);
+  }, [image, points, segmentationResult, selectedMaskIndex]);
 
   // 处理文件上传
   const handleFileSelect = useCallback((file: File) => {
@@ -161,6 +167,7 @@ export default function Editor() {
 
       if (response.success && response.data) {
         setSegmentationResult(response.data);
+        setSelectedMaskIndex(0); // 新结果默认选择第一个
       } else {
         setError(response.error || '分割处理失败');
       }
@@ -175,6 +182,7 @@ export default function Editor() {
   const clearAnnotations = useCallback(() => {
     setPoints([]);
     setSegmentationResult(null);
+    setSelectedMaskIndex(0); // 重置选择
   }, []);
 
   // 下载分割结果
@@ -432,33 +440,63 @@ export default function Editor() {
           {segmentationResult && (
             <div style={{ marginBottom: "20px" }}>
               <h4>✂️ 分割结果</h4>
-              <p>置信度: {(segmentationResult.score * 100).toFixed(1)}%</p>
-              <p>边界框: [{segmentationResult.bbox.map(b => Math.round(b)).join(', ')}]</p>
-              <p>会话ID: {segmentationResult.session_id}</p>
-              <div style={{
-                width: "100%",
-                height: "100px",
-                backgroundColor: "#1a1a2e",
-                borderRadius: "5px",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                marginTop: "10px"
-              }}>
-                {segmentationResult.mask ? (
-                  <img
-                    src={`data:image/png;base64,${segmentationResult.mask}`}
-                    alt="分割掩码"
+              <p>候选数量: {segmentationResult.masks.length}</p>
+
+              {/* 候选列表选择 */}
+              <div style={{ display: 'flex', gap: '8px', marginBottom: '10px', flexWrap: 'wrap' }}>
+                {segmentationResult.masks.map((m, idx) => (
+                  <button
+                    key={m.mask_id}
+                    onClick={() => setSelectedMaskIndex(idx)}
                     style={{
-                      maxWidth: "100%",
-                      maxHeight: "100%",
-                      borderRadius: "3px"
+                      padding: '6px 10px',
+                      borderRadius: '4px',
+                      border: '1px solid #555',
+                      backgroundColor: idx === selectedMaskIndex ? '#4a90e2' : '#333',
+                      color: 'white',
+                      cursor: 'pointer',
+                      fontSize: '12px'
                     }}
-                  />
-                ) : (
-                  <span style={{ color: "#666", fontSize: "12px" }}>掩码预览</span>
-                )}
+                    title={`score=${(m.score * 100).toFixed(1)}%`}
+                  >
+                    #{idx + 1}
+                  </button>
+                ))}
               </div>
+
+              {/* 当前选中信息与预览 */}
+              {(() => {
+                const masks = segmentationResult.masks;
+                const selIdx = Math.min(Math.max(selectedMaskIndex, 0), masks.length - 1);
+                const current = masks[selIdx];
+                return (
+                  <>
+                    <p>当前选择: #{selIdx + 1} / {masks.length}</p>
+                    <p>分数: {(current.score * 100).toFixed(1)}%</p>
+                    <p>会话ID: {segmentationResult.session_id}</p>
+                    <div style={{
+                      width: "100%",
+                      height: "100px",
+                      backgroundColor: "#1a1a2e",
+                      borderRadius: "5px",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      marginTop: "10px"
+                    }}>
+                      <img
+                        src={current.path}
+                        alt="分割掩码"
+                        style={{
+                          maxWidth: "100%",
+                          maxHeight: "100%",
+                          borderRadius: "3px"
+                        }}
+                      />
+                    </div>
+                  </>
+                );
+              })()}
             </div>
           )}
 

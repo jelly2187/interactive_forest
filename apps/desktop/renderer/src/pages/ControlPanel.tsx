@@ -1337,145 +1337,153 @@ export default function ControlPanel() {
             height: "100vh",
             backgroundColor: "#1a1a2e",
             color: "white",
-            display: "flex"
+            display: "flex",
+            flexDirection: "column"  // 改为垂直布局
         }}>
-            {/* 左侧工作区 - 减少空间占用 */}
+            {/* 顶部工具栏 - 跨越整个宽度 */}
             <div style={{
-                width: "55%", // 修改：从flex:1改为固定比例，减少左侧空间
+                padding: "15px",
+                backgroundColor: "#2a2a3e",
+                borderBottom: "2px solid #4a4a6e",
                 display: "flex",
-                flexDirection: "column"
+                alignItems: "center",
+                gap: "15px",
+                flexWrap: "wrap",
+                flexShrink: 0  // 防止工具栏被压缩
             }}>
-                {/* 工具栏 */}
+                <h2 style={{ margin: 0 }}>🎨 Interactive Forest 控制台</h2>
+
+                {/* 服务器状态 */}
                 <div style={{
-                    padding: "15px",
-                    backgroundColor: "#2a2a3e",
-                    borderBottom: "2px solid #4a4a6e",
                     display: "flex",
                     alignItems: "center",
-                    gap: "15px",
-                    flexWrap: "wrap"
+                    gap: "8px",
+                    padding: "6px 12px",
+                    backgroundColor: serverStatus === 'online' ? "#4CAF50" : serverStatus === 'offline' ? "#f44336" : "#FF9800",
+                    borderRadius: "15px",
+                    fontSize: "12px"
                 }}>
-                    <h2 style={{ margin: 0 }}>🎨 Interactive Forest 控制台</h2>
+                    <div style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: "white" }} />
+                    {serverStatus === 'checking' ? '检查中...' :
+                        serverStatus === 'online' ? 'SAM在线' : 'SAM离线'}
+                </div>
 
-                    {/* 服务器状态 */}
-                    <div style={{
-                        display: "flex",
-                        alignItems: "center",
-                        gap: "8px",
-                        padding: "6px 12px",
-                        backgroundColor: serverStatus === 'online' ? "#4CAF50" : serverStatus === 'offline' ? "#f44336" : "#FF9800",
-                        borderRadius: "15px",
-                        fontSize: "12px"
-                    }}>
-                        <div style={{ width: "6px", height: "6px", borderRadius: "50%", backgroundColor: "white" }} />
-                        {serverStatus === 'checking' ? '检查中...' :
-                            serverStatus === 'online' ? 'SAM在线' : 'SAM离线'}
-                    </div>
+                {/* 工作流步骤指示器 */}
+                <div style={{ display: "flex", gap: "10px", marginLeft: "auto" }}>
+                    {['upload', 'roi_selection', 'segmentation', 'candidates', 'optimization', 'integration'].map((step, index) => (
+                        <div
+                            key={step}
+                            style={{
+                                padding: "4px 12px",
+                                borderRadius: "15px",
+                                fontSize: "11px",
+                                backgroundColor: currentStep === step ? "#2196F3" : "#555",
+                                border: currentStep === step ? "2px solid #64B5F6" : "1px solid #777"
+                            }}
+                        >
+                            {index + 1}. {step === 'upload' ? '上传' :
+                                step === 'roi_selection' ? 'ROI选择' :
+                                    step === 'segmentation' ? '分割' :
+                                        step === 'candidates' ? '候选' :
+                                            step === 'optimization' ? '优化' : '集成'}
+                        </div>
+                    ))}
+                </div>
+            </div>
+            {/* 主工作区域 - 水平布局 */}
+            <div style={{
+                flex: 1,  // 占据剩余空间
+                display: "flex",
+                minHeight: 0  // 重要：防止flex子元素溢出
+            }}>
+                {/* 左侧画布区域 */}
+                <div style={{
+                    width: "55%",  // 保持原来的比例
+                    padding: "15px",
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    backgroundColor: "#1a1a2e"
+                }}>
+                    <div style={{ position: "relative" }}>
+                        <canvas
+                            ref={canvasRef}
+                            width={600}
+                            height={420}
+                            onMouseDown={isRefining ? handleBrushMouseDown : handleCanvasMouseDown}
+                            onMouseMove={isRefining ? handleBrushMouseMove : handleCanvasMouseMove}
+                            onMouseUp={isRefining ? handleBrushMouseUp : handleCanvasMouseUp}
+                            onContextMenu={(e) => e.preventDefault()}
+                            style={{
+                                border: "2px solid #666",
+                                borderRadius: "8px",
+                                backgroundColor: "#2a2a3e",
+                                cursor: isRefining ?
+                                    `url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="${brushSize * 2}" height="${brushSize * 2}" viewBox="0 0 ${brushSize * 2} ${brushSize * 2}"><circle cx="${brushSize}" cy="${brushSize}" r="${brushSize - 1}" fill="none" stroke="${brushMode === 'add' ? 'yellow' : 'red'}" stroke-width="1"/></svg>') ${brushSize} ${brushSize}, crosshair` :
+                                    currentStep === 'roi_selection' ? "crosshair" :
+                                        currentStep === 'segmentation' ? "pointer" : "default"
+                            }}
+                        />
 
-                    {/* 工作流步骤指示器 */}
-                    <div style={{ display: "flex", gap: "10px", marginLeft: "auto" }}>
-                        {['upload', 'roi_selection', 'segmentation', 'candidates', 'optimization', 'integration'].map((step, index) => (
-                            <div
-                                key={step}
-                                style={{
-                                    padding: "4px 12px",
-                                    borderRadius: "15px",
-                                    fontSize: "11px",
-                                    backgroundColor: currentStep === step ? "#2196F3" : "#555",
-                                    border: currentStep === step ? "2px solid #64B5F6" : "1px solid #777"
-                                }}
-                            >
-                                {index + 1}. {step === 'upload' ? '上传' :
-                                    step === 'roi_selection' ? 'ROI选择' :
-                                        step === 'segmentation' ? '分割' :
-                                            step === 'candidates' ? '候选' :
-                                                step === 'optimization' ? '优化' : '集成'}
+                        {/* 画布覆盖信息 */}
+                        {currentStep === 'upload' && (
+                            <div style={{
+                                position: "absolute",
+                                top: "50%",
+                                left: "50%",
+                                transform: "translate(-50%, -50%)",
+                                textAlign: "center",
+                                pointerEvents: "none"
+                            }}>
+                                <div style={{ fontSize: "24px", marginBottom: "10px" }}>📁</div>
+                                <div>拖拽图片到这里或点击上传</div>
                             </div>
-                        ))}
+                        )}
                     </div>
                 </div>
 
-                {/* 主工作区 */}
-                <div style={{ flex: 1, display: "flex" }}>
-                    {/* 画布区域 - 优化尺寸 */}
-                    <div style={{
-                        flex: 1,
-                        padding: "15px", // 减少padding
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        backgroundColor: "#1a1a2e" // 确保背景色一致
-                    }}>
-                        <div style={{ position: "relative" }}>
-                            <canvas
-                                ref={canvasRef}
-                                width={600} // 减小canvas尺寸
-                                height={420} // 减小canvas尺寸
-                                onMouseDown={isRefining ? handleBrushMouseDown : handleCanvasMouseDown}
-                                onMouseMove={isRefining ? handleBrushMouseMove : handleCanvasMouseMove}
-                                onMouseUp={isRefining ? handleBrushMouseUp : handleCanvasMouseUp}
-                                onContextMenu={(e) => e.preventDefault()}
-                                style={{
-                                    border: "2px solid #666",
-                                    borderRadius: "8px",
-                                    backgroundColor: "#2a2a3e",
-                                    cursor: isRefining ?
-                                        `url('data:image/svg+xml;utf8,<svg xmlns="http://www.w3.org/2000/svg" width="${brushSize * 2}" height="${brushSize * 2}" viewBox="0 0 ${brushSize * 2} ${brushSize * 2}"><circle cx="${brushSize}" cy="${brushSize}" r="${brushSize - 1}" fill="none" stroke="${brushMode === 'add' ? 'yellow' : 'red'}" stroke-width="1"/></svg>') ${brushSize} ${brushSize}, crosshair` :
-                                        currentStep === 'roi_selection' ? "crosshair" :
-                                            currentStep === 'segmentation' ? "pointer" : "default"
-                                }}
-                            />
-
-                            {/* 画布覆盖信息 */}
-                            {currentStep === 'upload' && (
-                                <div style={{
-                                    position: "absolute",
-                                    top: "50%",
-                                    left: "50%",
-                                    transform: "translate(-50%, -50%)",
-                                    textAlign: "center",
-                                    pointerEvents: "none"
-                                }}>
-                                    <div style={{ fontSize: "24px", marginBottom: "10px" }}>📁</div>
-                                    <div>拖拽图片到这里或点击上传</div>
-                                </div>
-                            )}
-                        </div>
+                {/* 右侧控制面板 */}
+                <div style={{
+                    width: "45%",  // 保持原来的比例
+                    backgroundColor: "#2a2a3e",
+                    borderLeft: "2px solid #4a4a6e",
+                    display: "flex",
+                    flexDirection: "column",
+                    minWidth: "400px",
+                    overflow: "hidden"  // 防止内容溢出
+                }}>
+                    {/* 文件上传区 */}
+                    <div style={{ padding: "15px", borderBottom: "1px solid #4a4a6e", flexShrink: 0 }}>
+                        <input
+                            ref={fileInputRef}
+                            type="file"
+                            accept="image/*"
+                            onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])}
+                            style={{ display: "none" }}
+                        />
+                        <button
+                            onClick={() => fileInputRef.current?.click()}
+                            style={{
+                                width: "100%",
+                                padding: "12px",
+                                backgroundColor: "#4CAF50",
+                                color: "white",
+                                border: "none",
+                                borderRadius: "6px",
+                                cursor: "pointer"
+                            }}
+                        >
+                            📁 选择图片
+                        </button>
                     </div>
 
-                    {/* 右侧控制面板 - 扩大空间 */}
+                    {/* 其余控制面板内容区域 - 可滚动 */}
                     <div style={{
-                        width: "45%", // 修改：从350px固定宽度改为45%，大幅增加控制面板空间
-                        backgroundColor: "#2a2a3e",
-                        borderLeft: "2px solid #4a4a6e",
+                        flex: 1,
+                        overflowY: "auto",
                         display: "flex",
-                        flexDirection: "column",
-                        minWidth: "400px" // 设置最小宽度确保控件不会过小
+                        flexDirection: "column"
                     }}>
-                        {/* 文件上传区 */}
-                        <div style={{ padding: "15px", borderBottom: "1px solid #4a4a6e" }}>
-                            <input
-                                ref={fileInputRef}
-                                type="file"
-                                accept="image/*"
-                                onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])}
-                                style={{ display: "none" }}
-                            />
-                            <button
-                                onClick={() => fileInputRef.current?.click()}
-                                style={{
-                                    width: "100%",
-                                    padding: "12px",
-                                    backgroundColor: "#4CAF50",
-                                    color: "white",
-                                    border: "none",
-                                    borderRadius: "6px",
-                                    cursor: "pointer"
-                                }}
-                            >
-                                📁 选择图片
-                            </button>
-                        </div>
 
                         {/* ROI管理区 */}
                         {roiBoxes.length > 0 && (
@@ -1899,268 +1907,294 @@ export default function ControlPanel() {
                                 </div>
                             </div>
                         )}
+                    </div>
+                </div>
 
-                        {/* 元素列表区 */}
-                        <div style={{ flex: 1, padding: "15px", overflowY: "auto" }}>
-                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "15px" }}>
-                                <h4>🎭 舞台元素</h4>
-                                {processedElements.length > 0 && (
-                                    <button
-                                        onClick={() => {
-                                            // 发送清空消息到投影屏幕
-                                            processedElements.forEach(element => {
-                                                window.postMessage({
-                                                    type: 'REMOVE_ELEMENT',
-                                                    data: { id: element.id }
-                                                }, window.location.origin);
-                                            });
-                                            setProcessedElements([]);
-                                        }}
-                                        style={{
-                                            padding: "4px 8px",
-                                            backgroundColor: "#f44336",
-                                            color: "white",
-                                            border: "none",
-                                            borderRadius: "4px",
-                                            fontSize: "10px",
-                                            cursor: "pointer"
-                                        }}
-                                    >
-                                        🗑️ 清空舞台
-                                    </button>
-                                )}
-                            </div>
-
-                            {processedElements.length === 0 ? (
-                                <div style={{
-                                    textAlign: "center",
-                                    color: "#666",
-                                    fontSize: "12px",
-                                    padding: "20px",
-                                    backgroundColor: "rgba(255,255,255,0.05)",
-                                    borderRadius: "6px",
-                                    border: "1px dashed #666"
-                                }}>
-                                    <div style={{ fontSize: "24px", marginBottom: "10px" }}>🎭</div>
-                                    <div>暂无舞台元素</div>
-                                    <div style={{ fontSize: "10px", marginTop: "5px" }}>
-                                        完成图像分割后元素将出现在这里
-                                    </div>
-                                </div>
-                            ) : (
-                                <>
-                                    {/* 整体控制 */}
-                                    <div style={{
-                                        marginBottom: "15px",
-                                        padding: "10px",
-                                        backgroundColor: "rgba(33, 150, 243, 0.1)",
-                                        borderRadius: "6px",
-                                        border: "1px solid #2196F3"
-                                    }}>
-                                        <div style={{ fontSize: "12px", fontWeight: "bold", marginBottom: "8px" }}>🎮 全局控制</div>
-                                        <div style={{ display: "flex", gap: "8px" }}>
-                                            <button
-                                                onClick={() => {
-                                                    processedElements.forEach(element => {
-                                                        window.postMessage({
-                                                            type: 'UPDATE_ELEMENT',
-                                                            data: { id: element.id, visible: true }
-                                                        }, window.location.origin);
-                                                    });
-                                                    setProcessedElements(prev => prev.map(el => ({ ...el, visible: true })));
-                                                }}
-                                                style={{ flex: 1, padding: "6px", fontSize: "10px", backgroundColor: "#4CAF50", color: "white", border: "none", borderRadius: "3px", cursor: "pointer" }}
-                                            >
-                                                👁️ 全部显示
-                                            </button>
-                                            <button
-                                                onClick={() => {
-                                                    processedElements.forEach(element => {
-                                                        window.postMessage({
-                                                            type: 'UPDATE_ELEMENT',
-                                                            data: { id: element.id, visible: false }
-                                                        }, window.location.origin);
-                                                    });
-                                                    setProcessedElements(prev => prev.map(el => ({ ...el, visible: false })));
-                                                }}
-                                                style={{ flex: 1, padding: "6px", fontSize: "10px", backgroundColor: "#666", color: "white", border: "none", borderRadius: "3px", cursor: "pointer" }}
-                                            >
-                                                🙈 全部隐藏
-                                            </button>
-                                        </div>
-                                    </div>
-
-                                    {/* 元素列表 */}
-                                    {processedElements.map((element, index) => (
-                                        <div
-                                            key={element.id}
-                                            style={{
-                                                padding: "12px",
-                                                margin: "8px 0",
-                                                backgroundColor: "#444",
-                                                borderRadius: "6px",
-                                                fontSize: "12px",
-                                                border: "1px solid #666"
-                                            }}
-                                        >
-                                            <div style={{
-                                                display: "flex",
-                                                justifyContent: "space-between",
-                                                alignItems: "center",
-                                                marginBottom: "8px"
-                                            }}>
-                                                <div style={{ fontWeight: "bold", color: element.visible ? "#4CAF50" : "#999" }}>
-                                                    {index + 1}. {element.name}
-                                                </div>
-                                                <button
-                                                    onClick={() => {
-                                                        const updatedElement = { ...element, visible: !element.visible };
-                                                        window.postMessage({
-                                                            type: 'UPDATE_ELEMENT',
-                                                            data: { id: element.id, visible: updatedElement.visible }
-                                                        }, window.location.origin);
-                                                        setProcessedElements(prev => prev.map(el =>
-                                                            el.id === element.id ? updatedElement : el
-                                                        ));
-                                                    }}
-                                                    style={{
-                                                        padding: "4px 8px",
-                                                        fontSize: "10px",
-                                                        backgroundColor: element.visible ? "#4CAF50" : "#666",
-                                                        color: "white",
-                                                        border: "none",
-                                                        borderRadius: "3px",
-                                                        cursor: "pointer"
-                                                    }}
-                                                >
-                                                    {element.visible ? "👁️ 显示" : "🙈 隐藏"}
-                                                </button>
-                                            </div>
-
-                                            <div style={{ fontSize: "10px", color: "#ccc", marginBottom: "8px" }}>
-                                                <div>位置: ({element.position.x.toFixed(0)}, {element.position.y.toFixed(0)})</div>
-                                                <div>缩放: {(element.scale * 100).toFixed(0)}% | 旋转: {element.rotation.toFixed(1)}°</div>
-                                            </div>
-
-                                            {/* 元素控制 */}
-                                            <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
-                                                <button
-                                                    style={{
-                                                        flex: "1 1 30%",
-                                                        padding: "4px",
-                                                        fontSize: "9px",
-                                                        backgroundColor: "#9C27B0",
-                                                        color: "white",
-                                                        border: "none",
-                                                        borderRadius: "3px",
-                                                        cursor: "pointer"
-                                                    }}
-                                                    onClick={() => openAudioModal(element)}
-                                                >
-                                                    🎵 音效
-                                                </button>
-                                                <button
-                                                    style={{
-                                                        flex: "1 1 30%",
-                                                        padding: "4px",
-                                                        fontSize: "9px",
-                                                        backgroundColor: "#FF9800",
-                                                        color: "white",
-                                                        border: "none",
-                                                        borderRadius: "3px",
-                                                        cursor: "pointer"
-                                                    }}
-                                                    onClick={() => openTrajectoryModal(element)}
-                                                >
-                                                    📍 轨迹
-                                                </button>
-                                                <button
-                                                    style={{
-                                                        flex: "1 1 30%",
-                                                        padding: "4px",
-                                                        fontSize: "9px",
-                                                        backgroundColor: "#f44336",
-                                                        color: "white",
-                                                        border: "none",
-                                                        borderRadius: "3px",
-                                                        cursor: "pointer"
-                                                    }}
-                                                    onClick={() => {
-                                                        window.postMessage({
-                                                            type: 'REMOVE_ELEMENT',
-                                                            data: { id: element.id }
-                                                        }, window.location.origin);
-                                                        setProcessedElements(prev => prev.filter(el => el.id !== element.id));
-                                                    }}
-                                                >
-                                                    �️ 删除
-                                                </button>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </>
+                {/* 右侧元素列表区 */}
+                <div style={{
+                    width: "20%",  // 新的元素列表区域
+                    backgroundColor: "#1f1f33",  // 稍微不同的背景色以区分
+                    display: "flex",
+                    flexDirection: "column",
+                    minWidth: "280px",
+                    overflow: "hidden"
+                }}>
+                    {/* 元素列表标题栏 */}
+                    <div style={{
+                        padding: "15px",
+                        borderBottom: "2px solid #4a4a6e",
+                        backgroundColor: "#2a2a3e",
+                        flexShrink: 0
+                    }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                            <h4 style={{ margin: 0 }}>🎭 舞台元素</h4>
+                            {processedElements.length > 0 && (
+                                <button
+                                    onClick={() => {
+                                        // 清空所有元素
+                                        processedElements.forEach(element => {
+                                            window.postMessage({
+                                                type: 'REMOVE_ELEMENT',
+                                                data: { id: element.id }
+                                            }, window.location.origin);
+                                        });
+                                        setProcessedElements([]);
+                                    }}
+                                    style={{
+                                        padding: "4px 8px",
+                                        backgroundColor: "#f44336",
+                                        color: "white",
+                                        border: "none",
+                                        borderRadius: "4px",
+                                        fontSize: "10px",
+                                        cursor: "pointer"
+                                    }}
+                                >
+                                    🗑️ 清空舞台
+                                </button>
                             )}
                         </div>
+                    </div>
+
+                    {/* 元素列表区 */}
+                    <div style={{ flex: 1, padding: "15px", overflowY: "auto" }}>
+                        {processedElements.length === 0 ? (
+                            <div style={{
+                                textAlign: "center",
+                                color: "#666",
+                                fontSize: "12px",
+                                padding: "20px",
+                                backgroundColor: "rgba(255,255,255,0.05)",
+                                borderRadius: "6px",
+                                border: "1px dashed #666"
+                            }}>
+                                <div style={{ fontSize: "24px", marginBottom: "10px" }}>🎭</div>
+                                <div>暂无舞台元素</div>
+                                <div style={{ fontSize: "10px", marginTop: "5px" }}>
+                                    完成图像分割后元素将出现在这里
+                                </div>
+                            </div>
+                        ) : (
+                            <>
+                                {/* 整体控制 */}
+                                <div style={{
+                                    marginBottom: "15px",
+                                    padding: "10px",
+                                    backgroundColor: "rgba(33, 150, 243, 0.1)",
+                                    borderRadius: "6px",
+                                    border: "1px solid #2196F3"
+                                }}>
+                                    <div style={{ fontSize: "12px", fontWeight: "bold", marginBottom: "8px" }}>🎮 全局控制</div>
+                                    <div style={{ display: "flex", gap: "8px" }}>
+                                        <button
+                                            onClick={() => {
+                                                processedElements.forEach(element => {
+                                                    window.postMessage({
+                                                        type: 'UPDATE_ELEMENT',
+                                                        data: { id: element.id, visible: true }
+                                                    }, window.location.origin);
+                                                });
+                                                setProcessedElements(prev => prev.map(el => ({ ...el, visible: true })));
+                                            }}
+                                            style={{ flex: 1, padding: "6px", fontSize: "10px", backgroundColor: "#4CAF50", color: "white", border: "none", borderRadius: "3px", cursor: "pointer" }}
+                                        >
+                                            👁️ 全部显示
+                                        </button>
+                                        <button
+                                            onClick={() => {
+                                                processedElements.forEach(element => {
+                                                    window.postMessage({
+                                                        type: 'UPDATE_ELEMENT',
+                                                        data: { id: element.id, visible: false }
+                                                    }, window.location.origin);
+                                                });
+                                                setProcessedElements(prev => prev.map(el => ({ ...el, visible: false })));
+                                            }}
+                                            style={{ flex: 1, padding: "6px", fontSize: "10px", backgroundColor: "#666", color: "white", border: "none", borderRadius: "3px", cursor: "pointer" }}
+                                        >
+                                            🙈 全部隐藏
+                                        </button>
+                                    </div>
+                                </div>
+
+                                {/* 元素列表 */}
+                                {processedElements.map((element, index) => (
+                                    <div
+                                        key={element.id}
+                                        style={{
+                                            padding: "12px",
+                                            margin: "8px 0",
+                                            backgroundColor: "#444",
+                                            borderRadius: "6px",
+                                            fontSize: "12px",
+                                            border: "1px solid #666"
+                                        }}
+                                    >
+                                        <div style={{
+                                            display: "flex",
+                                            justifyContent: "space-between",
+                                            alignItems: "center",
+                                            marginBottom: "8px"
+                                        }}>
+                                            <div style={{ fontWeight: "bold", color: element.visible ? "#4CAF50" : "#999" }}>
+                                                {index + 1}. {element.name}
+                                            </div>
+                                            <button
+                                                onClick={() => {
+                                                    const updatedElement = { ...element, visible: !element.visible };
+                                                    window.postMessage({
+                                                        type: 'UPDATE_ELEMENT',
+                                                        data: { id: element.id, visible: updatedElement.visible }
+                                                    }, window.location.origin);
+                                                    setProcessedElements(prev => prev.map(el =>
+                                                        el.id === element.id ? updatedElement : el
+                                                    ));
+                                                }}
+                                                style={{
+                                                    padding: "4px 8px",
+                                                    fontSize: "10px",
+                                                    backgroundColor: element.visible ? "#4CAF50" : "#666",
+                                                    color: "white",
+                                                    border: "none",
+                                                    borderRadius: "3px",
+                                                    cursor: "pointer"
+                                                }}
+                                            >
+                                                {element.visible ? "👁️ 显示" : "🙈 隐藏"}
+                                            </button>
+                                        </div>
+
+                                        <div style={{ fontSize: "10px", color: "#ccc", marginBottom: "8px" }}>
+                                            <div>位置: ({element.position.x.toFixed(0)}, {element.position.y.toFixed(0)})</div>
+                                            <div>缩放: {(element.scale * 100).toFixed(0)}% | 旋转: {element.rotation.toFixed(1)}°</div>
+                                        </div>
+
+                                        {/* 元素控制 */}
+                                        <div style={{ display: "flex", gap: "4px", flexWrap: "wrap" }}>
+                                            <button
+                                                style={{
+                                                    flex: "1 1 30%",
+                                                    padding: "4px",
+                                                    fontSize: "9px",
+                                                    backgroundColor: "#9C27B0",
+                                                    color: "white",
+                                                    border: "none",
+                                                    borderRadius: "3px",
+                                                    cursor: "pointer"
+                                                }}
+                                                onClick={() => openAudioModal(element)}
+                                            >
+                                                🎵 音效
+                                            </button>
+                                            <button
+                                                style={{
+                                                    flex: "1 1 30%",
+                                                    padding: "4px",
+                                                    fontSize: "9px",
+                                                    backgroundColor: "#FF9800",
+                                                    color: "white",
+                                                    border: "none",
+                                                    borderRadius: "3px",
+                                                    cursor: "pointer"
+                                                }}
+                                                onClick={() => openTrajectoryModal(element)}
+                                            >
+                                                📍 轨迹
+                                            </button>
+                                            <button
+                                                style={{
+                                                    flex: "1 1 30%",
+                                                    padding: "4px",
+                                                    fontSize: "9px",
+                                                    backgroundColor: "#f44336",
+                                                    color: "white",
+                                                    border: "none",
+                                                    borderRadius: "3px",
+                                                    cursor: "pointer"
+                                                }}
+                                                onClick={() => {
+                                                    window.postMessage({
+                                                        type: 'REMOVE_ELEMENT',
+                                                        data: { id: element.id }
+                                                    }, window.location.origin);
+                                                    setProcessedElements(prev => prev.filter(el => el.id !== element.id));
+                                                }}
+                                            >
+                                                �️ 删除
+                                            </button>
+                                        </div>
+                                    </div>
+                                ))}
+                            </>
+                        )}
                     </div>
                 </div>
             </div>
 
-            {/* 错误提示 */}
-            {error && (
-                <div style={{
-                    position: 'fixed',
-                    top: 20,
-                    right: 20,
-                    background: 'rgba(244, 67, 54, 0.9)',
-                    color: 'white',
-                    padding: '15px',
-                    borderRadius: '8px',
-                    zIndex: 1000,
-                    maxWidth: '400px',
-                    boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
-                }}>
-                    ❌ {error}
-                    <button
-                        onClick={() => setError(null)}
-                        style={{
-                            marginLeft: "10px",
-                            background: "none",
-                            border: "none",
-                            color: "white",
-                            cursor: "pointer",
-                            fontSize: "16px"
-                        }}
-                    >
-                        ✕
-                    </button>
-                </div>
-            )}
-
             {/* 音效控制模态对话框 */}
-            {selectedElementForModal && (
-                <AudioControlModal
-                    isOpen={audioModalOpen}
-                    onClose={() => {
-                        setAudioModalOpen(false);
-                        setSelectedElementForModal(null);
-                    }}
-                    element={selectedElementForModal}
-                    onUpdate={updateElementAudio}
-                />
-            )}
+            {
+                selectedElementForModal && (
+                    <AudioControlModal
+                        isOpen={audioModalOpen}
+                        onClose={() => {
+                            setAudioModalOpen(false);
+                            setSelectedElementForModal(null);
+                        }}
+                        element={selectedElementForModal}
+                        onUpdate={updateElementAudio}
+                    />
+                )
+            }
 
             {/* 轨迹编辑器模态对话框 */}
-            {selectedElementForModal && (
-                <TrajectoryEditorModal
-                    isOpen={trajectoryModalOpen}
-                    onClose={() => {
-                        setTrajectoryModalOpen(false);
-                        setSelectedElementForModal(null);
-                    }}
-                    element={selectedElementForModal}
-                    onUpdate={updateElementTrajectory}
-                />
-            )}
-        </div>
+            {
+                selectedElementForModal && (
+                    <TrajectoryEditorModal
+                        isOpen={trajectoryModalOpen}
+                        onClose={() => {
+                            setTrajectoryModalOpen(false);
+                            setSelectedElementForModal(null);
+                        }}
+                        element={selectedElementForModal}
+                        onUpdate={updateElementTrajectory}
+                    />
+                )
+            }
+
+            {/* 错误提示等其他浮层元素保持不变 */}
+            {
+                error && (
+                    <div style={{
+                        position: 'fixed',
+                        top: 20,
+                        right: 20,
+                        background: 'rgba(244, 67, 54, 0.9)',
+                        color: 'white',
+                        padding: '15px',
+                        borderRadius: '8px',
+                        zIndex: 1000,
+                        maxWidth: '400px',
+                        boxShadow: '0 4px 12px rgba(0,0,0,0.3)'
+                    }}>
+                        ❌ {error}
+                        <button
+                            onClick={() => setError(null)}
+                            style={{
+                                marginLeft: "10px",
+                                background: "none",
+                                border: "none",
+                                color: "white",
+                                cursor: "pointer",
+                                fontSize: "16px"
+                            }}
+                        >
+                            ✕
+                        </button>
+                    </div>
+                )
+            }
+
+
+        </div >
     );
 }
