@@ -1821,7 +1821,7 @@ export default function ControlPanel() {
                                     </div>
 
                                     {/* 刷子润色实时预览 */}
-                                    {selectedCandidate && candidates.length > 0 && (
+                                    {/* {selectedCandidate && candidates.length > 0 && (
                                         <div style={{ marginTop: "15px" }}>
                                             <h5 style={{ margin: "0 0 8px 0", fontSize: "12px", color: "#ccc" }}>🎯 润色预览</h5>
                                             <BrushRefinementPreview
@@ -1833,7 +1833,7 @@ export default function ControlPanel() {
                                                 tempBrushEffects={tempBrushEffects}
                                             />
                                         </div>
-                                    )}
+                                    )} */}
                                 </div>
 
                                 {/* 画笔操作按钮 */}

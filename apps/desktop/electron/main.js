@@ -36,16 +36,16 @@ function createMainWindow() {
   });
 
   // 添加调试信息
-  console.log("Environment variables:");
+  // console.log("Environment variables:");
   console.log("VITE_DEV_URL:", process.env.VITE_DEV_URL);
-  console.log("NODE_ENV:", process.env.NODE_ENV);
+  // console.log("NODE_ENV:", process.env.NODE_ENV);
 
   const devUrl = process.env.VITE_DEV_URL || "http://localhost:5173";
   console.log("Loading main window URL:", devUrl);
 
   if (devUrl) {
     mainWindow.loadURL(devUrl);
-    // 开发模式下打开DevTools
+    // 开发模式下打开DevTools，快捷键 Ctrl+Shift+I
     mainWindow.webContents.openDevTools();
   } else {
     const indexPath = path.join(__dirname, "../renderer/dist/index.html");
@@ -73,6 +73,7 @@ function createProjectionWindow() {
 
   // 如果有多个显示器，在第二个显示器上创建投影窗口
   let targetDisplay = displays[0]; // 默认主显示器
+  // TODO: 正式使用的时候切换为大屏
   if (displays.length > 1) {
     targetDisplay = displays[1]; // 使用第二个显示器
     console.log('Using secondary display for projection window');
