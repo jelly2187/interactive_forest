@@ -1,3 +1,8 @@
+/**
+ * Editor.tsx
+ * 图像分割编辑器页面(已弃置)
+ * 
+ */
 import { useEffect, useRef, useState, useCallback } from "react";
 import { apiService, type Point, type SegmentationResponse } from "../services/apiService";
 

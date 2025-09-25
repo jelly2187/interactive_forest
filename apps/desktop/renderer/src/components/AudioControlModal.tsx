@@ -27,16 +27,22 @@ export default function AudioControlModal({ isOpen, onClose, element, onUpdate }
     const [availableAudioFiles, setAvailableAudioFiles] = useState<string[]>([]);
     const audioRef = useRef<HTMLAudioElement>(null);
 
-    // 模拟可用音频文件列表
+    // 加载可用音频文件列表：优先从 /audio/manifest.json 读取，失败则回退到内置列表
     useEffect(() => {
-        setAvailableAudioFiles([
+        let disposed = false;
+        const fallback = [
             './audio/forest-ambient.mp3',
             './audio/bird-chirp.mp3',
             './audio/wind-leaves.mp3',
             './audio/water-flow.mp3',
             './audio/magic-sparkle.mp3',
             './audio/click-sound.mp3'
-        ]);
+        ];
+        fetch('/audio/manifest.json', { cache: 'no-cache' })
+            .then(r => (r.ok ? r.json() : Promise.reject()))
+            .then((list: string[]) => { if (!disposed) setAvailableAudioFiles(list && list.length ? list : fallback); })
+            .catch(() => { if (!disposed) setAvailableAudioFiles(fallback); });
+        return () => { disposed = true; };
     }, []);
 
     // 播放预览

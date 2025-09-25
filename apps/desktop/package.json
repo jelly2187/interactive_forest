@@ -5,10 +5,12 @@
   "main": "electron/main.js",
   "type": "commonjs",
   "scripts": {
+    "predev": "node scripts/generate-audio-manifest.js",
     "dev:vite": "cd renderer && vite",
     "dev:electron": "cross-env VITE_DEV_URL=http://localhost:5173 electron electron/main.js",
     "dev": "concurrently -k -n VITE,ELECTRON \"npm:dev:vite\" \"npm:dev:electron\"",
     "build:renderer": "cd renderer && vite build",
+    "prebuild": "node scripts/generate-audio-manifest.js",
     "build": "npm run build:renderer"
   },
   "dependencies": {

@@ -19,6 +19,7 @@ interface Element {
         isAnimating: boolean;
         startTime: number;
         duration: number;
+        loop?: boolean;
         keyframes: Array<{
             time: number; // 0-1
             x: number;
@@ -48,6 +49,8 @@ export default function ProjectionScreen() {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const videoRef = useRef<HTMLVideoElement>(null);
     const animationFrameRef = useRef<number | null>(null);
+    const audioMap = useRef<Map<string, HTMLAudioElement>>(new Map());
+    const audioDesired = useRef<Map<string, { src: string; isPlaying: boolean; loop: boolean; volume: number }>>(new Map());
 
     // 图像缓存
     const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
@@ -67,6 +70,67 @@ export default function ProjectionScreen() {
             soundOnInteraction: true
         }
     });
+    const forestStateRef = useRef(forestState);
+    useEffect(() => { forestStateRef.current = forestState; }, [forestState]);
+
+    // 音频控制
+    const updateElementAudio = useCallback((element: Element) => {
+        const audioCfg = element.audio;
+        const existing = audioMap.current.get(element.id);
+        if (!audioCfg) {
+            if (existing) {
+                try { existing.pause(); } catch { }
+                audioMap.current.delete(element.id);
+            }
+            audioDesired.current.delete(element.id);
+            return;
+        }
+        let audioEl = existing;
+        if (!audioEl) {
+            audioEl = new Audio();
+            audioEl.crossOrigin = 'anonymous';
+            audioMap.current.set(element.id, audioEl);
+        }
+        // 统一为绝对URL
+        const srcUrl = new URL(audioCfg.src, window.location.origin).href;
+        const desired = {
+            src: srcUrl,
+            isPlaying: !!audioCfg.isPlaying,
+            loop: !!audioCfg.loop,
+            volume: Math.max(0, Math.min(1, audioCfg.volume ?? 0.5))
+        };
+        const prevDesired = audioDesired.current.get(element.id);
+        audioDesired.current.set(element.id, desired);
+
+        // 应用静态属性变更
+        audioEl.loop = desired.loop;
+        audioEl.volume = desired.volume;
+
+        const changeSrc = audioEl.src !== desired.src;
+        if (changeSrc) {
+            audioEl.src = desired.src;
+        }
+
+        const applyPlayState = () => {
+            // 只在状态变化时操作，避免 play 后立刻 pause 的竞态
+            const nowPlaying = !audioEl.paused && !audioEl.ended && audioEl.currentTime > 0;
+            if (desired.isPlaying && !nowPlaying) {
+                audioEl.play().catch(err => console.warn('音频播放失败:', err));
+            } else if (!desired.isPlaying && nowPlaying) {
+                try { audioEl.pause(); } catch { }
+            }
+        };
+
+        if (changeSrc) {
+            // 等待资源可播放后再根据期望状态播放，避免 "play() request was interrupted by pause()"
+            const onCanPlay = () => { audioEl.removeEventListener('canplay', onCanPlay); applyPlayState(); };
+            audioEl.addEventListener('canplay', onCanPlay);
+            // 也设置一个兜底超时
+            setTimeout(() => { try { audioEl.removeEventListener('canplay', onCanPlay); } catch { } applyPlayState(); }, 1500);
+        } else {
+            applyPlayState();
+        }
+    }, []);
 
     // 鼠标交互状态
     const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
@@ -219,6 +283,8 @@ export default function ProjectionScreen() {
             }
 
             // 2. 绘制交互元素
+            const sx = canvas.width / 1920;
+            const sy = canvas.height / 1080;
             forestState.elements.forEach(element => {
                 if (!element.visible || element.opacity <= 0) return;
 
@@ -231,45 +297,63 @@ export default function ProjectionScreen() {
                 let currentOpacity = element.opacity;
 
                 if (element.trajectory?.isAnimating) {
-                    const elapsed = now - element.trajectory.startTime;
-                    const progress = Math.min(elapsed / element.trajectory.duration, 1);
+                    const traj = element.trajectory;
+                    const duration = Math.max(1, traj.duration || 1);
+                    const elapsed = now - traj.startTime;
+                    const progress = traj.loop ? ((elapsed % duration) / duration) : Math.min(elapsed / duration, 1);
+                    // 全局慢->快->慢（整体节奏），而非每段单独缓动
+                    const easedProgress = easeInOutCubic(progress);
 
                     // 轨迹插值
-                    const keyframes = element.trajectory.keyframes;
+                    const keyframes = traj.keyframes;
                     if (keyframes.length > 1) {
                         // 找到当前进度对应的关键帧
                         let startFrame = keyframes[0];
                         let endFrame = keyframes[keyframes.length - 1];
 
+                        // 覆盖最后一段：当 easedProgress === 1 精确匹配到最后一段终点
                         for (let i = 0; i < keyframes.length - 1; i++) {
-                            if (progress >= keyframes[i].time && progress <= keyframes[i + 1].time) {
+                            const a = keyframes[i].time;
+                            const b = keyframes[i + 1].time;
+                            if (easedProgress >= a && (easedProgress <= b || (i === keyframes.length - 2 && easedProgress >= b))) {
                                 startFrame = keyframes[i];
                                 endFrame = keyframes[i + 1];
                                 break;
                             }
                         }
 
-                        const frameProgress = (progress - startFrame.time) / (endFrame.time - startFrame.time);
-                        const smoothProgress = easeInOutCubic(frameProgress);
-
-                        currentPos.x = lerp(startFrame.x, endFrame.x, smoothProgress);
-                        currentPos.y = lerp(startFrame.y, endFrame.y, smoothProgress);
+                        // 段内线性插值（整体节奏已做缓动）
+                        const frameProgress = (easedProgress - startFrame.time) / Math.max(1e-6, (endFrame.time - startFrame.time));
+                        currentPos.x = lerp(startFrame.x, endFrame.x, frameProgress);
+                        currentPos.y = lerp(startFrame.y, endFrame.y, frameProgress);
 
                         if (startFrame.scale !== undefined && endFrame.scale !== undefined) {
-                            currentScale = lerp(startFrame.scale, endFrame.scale, smoothProgress);
+                            currentScale = lerp(startFrame.scale, endFrame.scale, frameProgress);
                         }
                         if (startFrame.rotation !== undefined && endFrame.rotation !== undefined) {
-                            currentRotation = lerp(startFrame.rotation, endFrame.rotation, smoothProgress);
+                            currentRotation = lerp(startFrame.rotation, endFrame.rotation, frameProgress);
                         }
                         if (startFrame.opacity !== undefined && endFrame.opacity !== undefined) {
-                            currentOpacity = lerp(startFrame.opacity, endFrame.opacity, smoothProgress);
+                            currentOpacity = lerp(startFrame.opacity, endFrame.opacity, frameProgress);
                         }
+                    }
+
+                    // 若开启循环并到达周期末，重置该元素的 startTime 以持续循环
+                    if (traj.loop && elapsed >= duration) {
+                        setForestState(prev => ({
+                            ...prev,
+                            elements: prev.elements.map(el => {
+                                if (el.id !== element.id || !el.trajectory) return el;
+                                return { ...el, trajectory: { ...el.trajectory, startTime: now } } as any;
+                            })
+                        }));
                     }
                 }
 
                 // 设置变换
                 ctx.globalAlpha = currentOpacity;
-                ctx.translate(currentPos.x, currentPos.y);
+                // 将虚拟坐标(1920x1080)映射到实际画布尺寸
+                ctx.translate(currentPos.x * sx, currentPos.y * sy);
                 ctx.rotate(currentRotation);
                 ctx.scale(currentScale, currentScale);
 
@@ -439,28 +523,40 @@ export default function ProjectionScreen() {
         });
     }, []);
 
-    // 监听来自控制台的消息
+    // 监听来自控制台的消息（window.postMessage 路径）
     useEffect(() => {
         const handleMessage = (event: MessageEvent) => {
             if (event.origin !== window.location.origin) return;
-
-            const { type, data } = event.data;
+            const payload = event.data || {};
+            const { type, data } = payload;
+            if (!type) return;
 
             switch (type) {
+                case 'REQUEST_BACKGROUND_SNAPSHOT': {
+                    // 返回当前画布快照（dataURL），给编辑器用于当作底图
+                    const canvas = canvasRef.current;
+                    if (!canvas) return;
+                    try {
+                        const dataUrl = canvas.toDataURL('image/png');
+                        window.postMessage({ type: 'BACKGROUND_SNAPSHOT', data: { dataUrl } }, window.location.origin);
+                    } catch (e) { console.warn('快照失败', e); }
+                    break;
+                }
                 case 'ADD_ELEMENT':
                     setForestState(prev => ({
                         ...prev,
                         elements: [...prev.elements, data]
                     }));
+                    try { updateElementAudio(data as any); } catch { }
                     break;
 
                 case 'UPDATE_ELEMENT':
-                    setForestState(prev => ({
-                        ...prev,
-                        elements: prev.elements.map(el =>
-                            el.id === data.id ? { ...el, ...data } : el
-                        )
-                    }));
+                    setForestState(prev => {
+                        const mergedElements = prev.elements.map(el => el.id === data.id ? { ...el, ...data } : el);
+                        const merged = mergedElements.find(el => el.id === data.id);
+                        if (merged) { try { updateElementAudio(merged as any); } catch { } }
+                        return { ...prev, elements: mergedElements };
+                    });
                     break;
 
                 case 'REMOVE_ELEMENT':
@@ -468,6 +564,10 @@ export default function ProjectionScreen() {
                         ...prev,
                         elements: prev.elements.filter(el => el.id !== data.id)
                     }));
+                    {
+                        const existing = audioMap.current.get(data.id);
+                        if (existing) { try { existing.pause(); } catch { }; audioMap.current.delete(data.id); }
+                    }
                     break;
 
                 case 'UPDATE_FOREST_CONFIG':
@@ -485,16 +585,17 @@ export default function ProjectionScreen() {
                         ...prev,
                         elements: [...prev.elements, data.data]
                     }));
+                    try { updateElementAudio(data.data as any); } catch { }
                     console.log('元素已添加到投影屏幕:', data.data.name);
                     break;
 
                 case 'UPDATE_ELEMENT':
-                    setForestState(prev => ({
-                        ...prev,
-                        elements: prev.elements.map(el =>
-                            el.id === data.data.id ? { ...el, ...data.data } : el
-                        )
-                    }));
+                    setForestState(prev => {
+                        const mergedElements = prev.elements.map(el => el.id === data.data.id ? { ...el, ...data.data } : el);
+                        const merged = mergedElements.find(el => el.id === data.data.id);
+                        if (merged) { try { updateElementAudio(merged as any); } catch { } }
+                        return { ...prev, elements: mergedElements };
+                    });
                     break;
 
                 case 'REMOVE_ELEMENT':
@@ -502,6 +603,10 @@ export default function ProjectionScreen() {
                         ...prev,
                         elements: prev.elements.filter(el => el.id !== data.data.id)
                     }));
+                    {
+                        const existing = audioMap.current.get(data.data.id);
+                        if (existing) { try { existing.pause(); } catch { }; audioMap.current.delete(data.data.id); }
+                    }
                     break;
 
                 case 'UPDATE_FOREST_CONFIG':
@@ -516,12 +621,22 @@ export default function ProjectionScreen() {
         // 监听Electron IPC消息
         if (typeof window !== 'undefined' && (window as any).electronAPI) {
             (window as any).electronAPI.onProjectionMessage(handleElectronMessage);
+            (window as any).electronAPI.onRequestBackground(() => {
+                const canvas = canvasRef.current;
+                if (!canvas) return;
+                try {
+                    const dataUrl = canvas.toDataURL('image/png');
+                    (window as any).electronAPI.replyBackground(dataUrl);
+                } catch (e) { console.warn('快照失败', e); }
+            });
         }
 
         return () => {
             window.removeEventListener('message', handleMessage);
             if (typeof window !== 'undefined' && (window as any).electronAPI) {
                 (window as any).electronAPI.removeAllListeners('projection-message');
+                (window as any).electronAPI.removeAllListeners('request-background');
+                (window as any).electronAPI.removeAllListeners('background-snapshot');
             }
         };
     }, []);
@@ -547,6 +662,9 @@ export default function ProjectionScreen() {
             if (animationFrameRef.current) {
                 cancelAnimationFrame(animationFrameRef.current);
             }
+            // 清理所有音频
+            audioMap.current.forEach(a => { try { a.pause(); } catch { } });
+            audioMap.current.clear();
         };
     }, [render, handleResize]);
 

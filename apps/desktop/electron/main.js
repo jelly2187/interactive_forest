@@ -17,10 +17,24 @@ ipcMain.on('send-to-main', (event, data) => {
   }
 });
 
+// 背景快照请求：从主窗口请求，转发给投影窗口
+ipcMain.on('request-background', () => {
+  if (projectionWindow) {
+    projectionWindow.webContents.send('request-background');
+  }
+});
+
+// 背景快照回复：从投影窗口返回，转发给主窗口
+ipcMain.on('reply-background', (event, dataUrl) => {
+  if (mainWindow) {
+    mainWindow.webContents.send('background-snapshot', dataUrl);
+  }
+});
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 2560,
-    height: 1440,
+    width: 1280,
+    height: 720,
     backgroundColor: "#000000",
     autoHideMenuBar: true,
     // fullscreen: true,  // 暂时注释掉全屏模式，便于调试
@@ -82,12 +96,12 @@ function createProjectionWindow() {
   // 如果有多个显示器，在第二个显示器上创建投影窗口
   let targetDisplay = displays[0]; // 默认主显示器
   // TODO: 正式使用的时候切换为大屏
-  if (displays.length > 1) {
-    targetDisplay = displays[1]; // 使用第二个显示器
-    console.log('Using secondary display for projection window');
-  } else {
-    console.log('Only one display available, creating projection window on main display');
-  }
+  // if (displays.length > 1) {
+  //   targetDisplay = displays[1]; // 使用第二个显示器
+  //   console.log('Using secondary display for projection window');
+  // } else {
+  //   console.log('Only one display available, creating projection window on main display');
+  // }
 
   projectionWindow = new BrowserWindow({
     x: targetDisplay.bounds.x,

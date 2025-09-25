@@ -9,5 +9,10 @@ contextBridge.exposeInMainWorld("electronAPI", {
     sendToMain: (data) => ipcRenderer.send('send-to-main', data),
     onProjectionMessage: (callback) => ipcRenderer.on('projection-message', callback),
     onMainMessage: (callback) => ipcRenderer.on('main-message', callback),
+    // 背景快照相关（IPC 通道）
+    requestBackground: () => ipcRenderer.send('request-background'),
+    onBackgroundSnapshot: (callback) => ipcRenderer.on('background-snapshot', (event, dataUrl) => callback(event, dataUrl)),
+    onRequestBackground: (callback) => ipcRenderer.on('request-background', callback),
+    replyBackground: (dataUrl) => ipcRenderer.send('reply-background', dataUrl),
     removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel)
 });
