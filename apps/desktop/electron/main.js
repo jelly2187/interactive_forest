@@ -19,8 +19,8 @@ ipcMain.on('send-to-main', (event, data) => {
 
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 800,
+    width: 2560,
+    height: 1440,
     backgroundColor: "#000000",
     autoHideMenuBar: true,
     // fullscreen: true,  // 暂时注释掉全屏模式，便于调试
@@ -52,6 +52,14 @@ function createMainWindow() {
     console.log("Loading file:", indexPath);
     mainWindow.loadFile(indexPath);
   }
+
+  // 在主窗口完成首次加载后创建投影窗口（替代固定延迟）
+  mainWindow.webContents.once('did-finish-load', () => {
+    console.log('Main window did-finish-load, creating projection window');
+    if (!projectionWindow) {
+      createProjectionWindow();
+    }
+  });
 
   // 添加错误处理
   mainWindow.webContents.on('did-fail-load', (event, errorCode, errorDescription, validatedURL) => {
@@ -128,11 +136,7 @@ function createProjectionWindow() {
 
 function createWindows() {
   createMainWindow();
-
-  // 延迟创建投影窗口，确保主窗口先加载
-  setTimeout(() => {
-    createProjectionWindow();
-  }, 2000);
+  // 移除固定延迟，投影窗口将在主窗口 did-finish-load 后创建
 }
 
 app.whenReady().then(createWindows);
@@ -146,8 +150,14 @@ app.on("window-all-closed", () => {
 app.on('activate', () => {
   if (mainWindow === null) {
     createMainWindow();
-  }
-  if (projectionWindow === null) {
-    createProjectionWindow();
+  } else if (projectionWindow === null) {
+    // 如果主窗口已加载完成，直接创建；否则等加载完成后创建
+    if (mainWindow && !mainWindow.webContents.isLoading()) {
+      createProjectionWindow();
+    } else if (mainWindow) {
+      mainWindow.webContents.once('did-finish-load', () => {
+        if (!projectionWindow) createProjectionWindow();
+      });
+    }
   }
 });

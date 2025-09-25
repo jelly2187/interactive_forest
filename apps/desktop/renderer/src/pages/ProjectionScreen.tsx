@@ -651,7 +651,9 @@ export default function ProjectionScreen() {
         for (let i = 0; i < 20; i++) {
             const x = (now * 0.05 + i * 123) % width;
             const y = (now * 0.02 + i * 456) % height;
-            const size = 1 + Math.sin(now * 0.01 + i) * 2;
+            // 计算粒子大小并夹紧下限，避免传入负半径导致 Canvas arc 报错
+            const sizeBase = 1 + Math.sin(now * 0.01 + i) * 2;
+            const size = Math.max(0.5, sizeBase);
             const opacity = 0.3 + Math.sin(now * 0.008 + i) * 0.2;
 
             ctx.fillStyle = `rgba(144, 238, 144, ${opacity})`;
