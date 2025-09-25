@@ -478,6 +478,7 @@ export default function ControlPanel() {
 
     // 元素管理
     const [processedElements, setProcessedElements] = useState<ProcessedElement[]>([]);
+    const [audioProgress, setAudioProgress] = useState<Map<string, number>>(new Map());
 
     // 统一的投影窗口消息发送辅助（优先 Electron IPC，回退 postMessage）
     const sendProjectionMessage = useCallback((payload: any) => {
@@ -490,6 +491,49 @@ export default function ControlPanel() {
         } catch (err) {
             console.warn('发送投影消息失败', err, payload);
         }
+    }, []);
+
+    // 监听来自投影的音频进度与结束
+    useEffect(() => {
+        const handler = (_event: any, data: any) => {
+            if (!data || !data.type) return;
+            if (data.type === 'AUDIO_PROGRESS') {
+                const { id, progress } = data.data || {};
+                if (!id) return;
+                setAudioProgress(prev => {
+                    const next = new Map(prev);
+                    next.set(id, progress ?? 0);
+                    return next;
+                });
+                // 若进度上报到来且本地未标记为播放中，则置为播放中（兼容投影端“运动开始自动播放一次”的场景）
+                setProcessedElements(prev => prev.map(el => el.id === id ? ({ ...el, audio: el.audio ? { ...el.audio, isPlaying: true } : el.audio }) : el));
+            } else if (data.type === 'AUDIO_ENDED') {
+                const { id } = data.data || {};
+                if (!id) return;
+                setAudioProgress(prev => {
+                    const next = new Map(prev);
+                    next.set(id, 1);
+                    return next;
+                });
+                setProcessedElements(prev => prev.map(el => el.id === id ? ({ ...el, audio: el.audio ? { ...el.audio, isPlaying: false } : el.audio }) : el));
+            } else if (data.type === 'AUDIO_ERROR') {
+                const { id } = data.data || {};
+                if (!id) return;
+                // 播放失败时，立即恢复按钮可点击状态
+                setProcessedElements(prev => prev.map(el => el.id === id ? ({ ...el, audio: el.audio ? { ...el.audio, isPlaying: false } : el.audio }) : el));
+                console.warn('AUDIO_ERROR from projection:', data.data?.message);
+            }
+        };
+        if ((window as any).electronAPI?.onMainMessage) {
+            (window as any).electronAPI.onMainMessage(handler);
+        } else {
+            // postMessage 路径暂不实现进度通道
+        }
+        return () => {
+            if ((window as any).electronAPI?.removeAllListeners) {
+                (window as any).electronAPI.removeAllListeners('main-message');
+            }
+        };
     }, []);
 
     // ROI状态持久化 - 保存每个ROI的工作状态
@@ -1011,7 +1055,7 @@ export default function ControlPanel() {
                 },
                 scale: 1.0,
                 rotation: 0,
-                visible: true,
+                visible: false,
                 // 添加ROI信息用于舞台渲染
                 originalROI: {
                     x: currentROI.x,
@@ -1481,8 +1525,20 @@ export default function ControlPanel() {
                                 <div style={{ marginBottom: 15, padding: 10, backgroundColor: 'rgba(33,150,243,0.1)', borderRadius: 6, border: '1px solid #2196F3' }}>
                                     <div style={{ fontSize: 12, fontWeight: 'bold', marginBottom: 8 }}>🎮 全局控制</div>
                                     <div style={{ display: 'flex', gap: 8 }}>
-                                        <button onClick={() => { processedElements.filter(el => el.published).forEach(el => sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: { id: el.id, visible: true } })); setProcessedElements(prev => prev.map(el => el.published ? ({ ...el, visible: true }) : el)); }} style={{ flex: 1, padding: 6, fontSize: 10, backgroundColor: '#4CAF50', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }}>👁️ 全部显示(已上墙)</button>
-                                        <button onClick={() => { processedElements.filter(el => el.published).forEach(el => sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: { id: el.id, visible: false } })); setProcessedElements(prev => prev.map(el => el.published ? ({ ...el, visible: false }) : el)); }} style={{ flex: 1, padding: 6, fontSize: 10, backgroundColor: '#666', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }}>🙈 全部隐藏(已上墙)</button>
+                                        <button onClick={() => {
+                                            processedElements.filter(el => el.published).forEach(el => {
+                                                sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: { id: el.id, visible: true } });
+                                            });
+                                            setProcessedElements(prev => prev.map(el => el.published ? ({ ...el, visible: true }) : el));
+                                        }} style={{ flex: 1, padding: 6, fontSize: 10, backgroundColor: '#4CAF50', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }}>👁️ 全部显示(已上墙)</button>
+                                        <button onClick={() => {
+                                            processedElements.filter(el => el.published).forEach(el => {
+                                                const data: any = { id: el.id, visible: false };
+                                                if (el.audio?.src) data.audio = { ...el.audio, isPlaying: false };
+                                                sendProjectionMessage({ type: 'UPDATE_ELEMENT', data });
+                                            });
+                                            setProcessedElements(prev => prev.map(el => el.published ? ({ ...el, visible: false, audio: el.audio ? { ...el.audio, isPlaying: false } : el.audio }) : el));
+                                        }} style={{ flex: 1, padding: 6, fontSize: 10, backgroundColor: '#666', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }}>🙈 全部隐藏(已上墙)</button>
                                     </div>
                                 </div>
                                 {processedElements.map((element, index) => (
@@ -1507,7 +1563,17 @@ export default function ControlPanel() {
                                                             <span title="未设置轨迹" style={{ fontSize: 10, padding: '2px 6px', borderRadius: 10, background: 'rgba(158,158,158,0.15)', border: '1px solid #9E9E9E', color: '#BDBDBD' }}>—</span>
                                                         )}
                                                     </div>
-                                                    <button onClick={() => { const updated = { ...element, visible: !element.visible }; sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: { id: element.id, visible: updated.visible } }); setProcessedElements(prev => prev.map(el => el.id === element.id ? updated : el)); }} style={{ padding: '2px 6px', fontSize: 10, backgroundColor: element.visible ? '#4CAF50' : '#666', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }}>{element.visible ? '👁️' : '🙈'}</button>
+                                                    <button onClick={() => {
+                                                        const newVisible = !element.visible;
+                                                        const updateData: any = { id: element.id, visible: newVisible };
+                                                        const updated = { ...element, visible: newVisible } as any;
+                                                        if (!newVisible && element.audio?.src) {
+                                                            updateData.audio = { ...element.audio, isPlaying: false };
+                                                            updated.audio = { ...element.audio, isPlaying: false };
+                                                        }
+                                                        sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: updateData });
+                                                        setProcessedElements(prev => prev.map(el => el.id === element.id ? updated : el));
+                                                    }} style={{ padding: '2px 6px', fontSize: 10, backgroundColor: element.visible ? '#4CAF50' : '#666', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }}>{element.visible ? '👁️' : '🙈'}</button>
                                                 </div>
                                                 <div style={{ fontSize: 10, color: '#ccc', marginBottom: 6, lineHeight: 1.3 }}>
                                                     <div>位置: ({element.position.x.toFixed(0)}, {element.position.y.toFixed(0)})</div>
@@ -1516,20 +1582,40 @@ export default function ControlPanel() {
                                                 <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
                                                     <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#9C27B0', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={() => openAudioModal(element)}>🎵 音效</button>
                                                     <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#FF9800', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={() => openTrajectoryModal(element)}>📍 轨迹</button>
-                                                    {/* 手动播放音效（仅针对已上墙元素生效，避免混淆） */}
-                                                    <button
-                                                        style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: element.published && element.audio?.src ? '#3F51B5' : '#666', color: 'white', border: 'none', borderRadius: 3, cursor: element.published && element.audio?.src ? 'pointer' : 'not-allowed' }}
-                                                        onClick={() => { if (element.published && element.audio?.src) { if (element.audio.isPlaying) return; sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: { id: element.id, audio: { ...element.audio, isPlaying: true } } }); } }}
-                                                    >▶️ 播放</button>
-                                                    <button
-                                                        style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: element.published && element.audio?.src ? '#607D8B' : '#666', color: 'white', border: 'none', borderRadius: 3, cursor: element.published && element.audio?.src ? 'pointer' : 'not-allowed' }}
-                                                        onClick={() => { if (element.published && element.audio?.src) { if (!element.audio.isPlaying) return; sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: { id: element.id, audio: { ...element.audio, isPlaying: false } } }); } }}
-                                                    >⏸️ 停止</button>
+                                                    {/* 手动播放/停止：仅在已上墙且设置了音频时显示，避免误导 */}
+                                                    {element.published && element.audio?.src && (
+                                                        <>
+                                                            <button
+                                                                style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#3F51B5', color: 'white', border: 'none', borderRadius: 3, cursor: element.audio.isPlaying ? 'not-allowed' : 'pointer', opacity: element.audio.isPlaying ? 0.7 : 1 }}
+                                                                disabled={!!element.audio.isPlaying}
+                                                                onClick={() => {
+                                                                    // 单次播放：仅在未播放时触发一次
+                                                                    if (element.audio?.isPlaying) return;
+                                                                    // 重置进度到0，随后由投影端发回的进度事件驱动
+                                                                    setAudioProgress(prev => {
+                                                                        const next = new Map(prev);
+                                                                        next.set(element.id, 0);
+                                                                        return next;
+                                                                    });
+                                                                    // 改为发送专用命令，避免被外部 pause 打断手动播放
+                                                                    sendProjectionMessage({ type: 'PLAY_AUDIO_ONCE', data: { id: element.id } });
+                                                                }}
+                                                            >▶️ 播放</button>
+                                                            {/* 进度条：由投影端回传 AUDIO_PROGRESS 更新 */}
+                                                            <div style={{ flex: 2, height: 6, background: 'rgba(255,255,255,0.15)', borderRadius: 3, alignSelf: 'center' }}>
+                                                                {(() => {
+                                                                    const p = (audioProgress.get(element.id) ?? 0); return (
+                                                                        <div style={{ width: `${Math.max(0, Math.min(100, Math.round(p * 100)))}%`, transition: 'width 0.2s linear', height: '100%', background: '#90CAF9', borderRadius: 3 }} />
+                                                                    );
+                                                                })()}
+                                                            </div>
+                                                        </>
+                                                    )}
                                                     {/* 上墙/下墙 */}
                                                     {element.published ? (
-                                                        <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#795548', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={() => { sendProjectionMessage({ type: 'REMOVE_ELEMENT', data: { id: element.id } }); setProcessedElements(prev => prev.map(el => el.id === element.id ? { ...el, published: false } : el)); }}>⬇️ 下墙</button>
+                                                        <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#795548', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={() => { sendProjectionMessage({ type: 'REMOVE_ELEMENT', data: { id: element.id } }); setProcessedElements(prev => prev.map(el => el.id === element.id ? { ...el, published: false, audio: el.audio ? { ...el.audio, isPlaying: false } : el.audio } : el)); setAudioProgress(prev => { const next = new Map(prev); next.set(element.id, 0); return next; }); }}>⬇️ 下墙</button>
                                                     ) : (
-                                                        <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#4CAF50', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={() => { const hasValidKeyframes = Array.isArray(element.trajectory?.keyframes) && (element.trajectory!.keyframes.length >= 2); const payload = { ...element, visible: true, opacity: 1, audio: element.audio ? { ...element.audio, isPlaying: true } : undefined, trajectory: element.trajectory ? { ...element.trajectory, isAnimating: hasValidKeyframes ? true : !!element.trajectory.isAnimating, startTime: hasValidKeyframes ? Date.now() : (element.trajectory.startTime || Date.now()) } : undefined }; sendProjectionMessage({ type: 'ADD_ELEMENT', data: payload }); setProcessedElements(prev => prev.map(el => el.id === element.id ? { ...el, published: true, visible: true, audio: payload.audio || el.audio, trajectory: payload.trajectory || el.trajectory } : el)); }}>⬆️ 上墙</button>
+                                                        <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#4CAF50', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={() => { const hasValidKeyframes = Array.isArray(element.trajectory?.keyframes) && (element.trajectory!.keyframes.length >= 2); const payload = { ...element, visible: true, opacity: 1, audio: element.audio ? { ...element.audio, isPlaying: false } : undefined, trajectory: element.trajectory ? { ...element.trajectory, isAnimating: hasValidKeyframes ? true : !!element.trajectory.isAnimating, startTime: hasValidKeyframes ? Date.now() : (element.trajectory.startTime || Date.now()) } : undefined }; sendProjectionMessage({ type: 'ADD_ELEMENT', data: payload }); setProcessedElements(prev => prev.map(el => el.id === element.id ? { ...el, published: true, visible: true, audio: payload.audio || el.audio, trajectory: payload.trajectory || el.trajectory } : el)); setAudioProgress(prev => { const next = new Map(prev); next.set(element.id, 0); return next; }); }}>⬆️ 上墙</button>
                                                     )}
                                                     <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#f44336', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={() => { if (element.published) { sendProjectionMessage({ type: 'REMOVE_ELEMENT', data: { id: element.id } }); } setProcessedElements(prev => prev.filter(el => el.id !== element.id)); }}>🗑️ 删除</button>
                                                 </div>

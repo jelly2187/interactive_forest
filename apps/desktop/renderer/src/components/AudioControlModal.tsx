@@ -20,7 +20,6 @@ export default function AudioControlModal({ isOpen, onClose, element, onUpdate }
     const [audioConfig, setAudioConfig] = useState({
         src: element.audio?.src || '',
         volume: element.audio?.volume || 0.5,
-        loop: element.audio?.loop || false,
         isPlaying: element.audio?.isPlaying || false
     });
 
@@ -50,7 +49,7 @@ export default function AudioControlModal({ isOpen, onClose, element, onUpdate }
         if (audioRef.current && audioConfig.src) {
             audioRef.current.src = audioConfig.src;
             audioRef.current.volume = audioConfig.volume;
-            audioRef.current.loop = audioConfig.loop;
+            // 预览阶段不做强制循环
             audioRef.current.play().catch(console.warn);
         }
     };
@@ -63,9 +62,9 @@ export default function AudioControlModal({ isOpen, onClose, element, onUpdate }
         }
     };
 
-    // 保存配置
+    // 保存配置（不再暴露 loop，默认 false，运动过程中由投影端强制循环）
     const handleSave = () => {
-        onUpdate(audioConfig);
+        onUpdate({ ...audioConfig, loop: false });
         onClose();
     };
 
@@ -162,18 +161,7 @@ export default function AudioControlModal({ isOpen, onClose, element, onUpdate }
                     />
                 </div>
 
-                {/* 循环播放 */}
-                <div style={{ marginBottom: '20px' }}>
-                    <label style={{ display: 'flex', alignItems: 'center', fontSize: '14px', cursor: 'pointer' }}>
-                        <input
-                            type="checkbox"
-                            checked={audioConfig.loop}
-                            onChange={(e) => setAudioConfig(prev => ({ ...prev, loop: e.target.checked }))}
-                            style={{ marginRight: '8px' }}
-                        />
-                        循环播放
-                    </label>
-                </div>
+                {/* 循环播放选项已移除：音频在运动中由投影端自动循环，运动结束自动停止。 */}
 
                 {/* 预览控制 */}
                 {audioConfig.src && (

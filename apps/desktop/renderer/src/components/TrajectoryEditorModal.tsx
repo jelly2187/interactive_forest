@@ -36,7 +36,9 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
     const [selectedKeyframe, setSelectedKeyframe] = useState<number>(0);
     const [isPlaying, setIsPlaying] = useState(false);
     const [currentTime, setCurrentTime] = useState(0);
-    const [loop, setLoop] = useState<boolean>(element.trajectory?.loop ?? true);
+    // 轨迹循环默认不勾选；循环语义为往返（起点->终点->起点）
+    const [loop, setLoop] = useState<boolean>(element.trajectory?.loop ?? false);
+    const [easing, setEasing] = useState<string>((element as any).trajectory?.easing ?? 'easeInOut');
 
     // Freehand mode state
     const [mode, setMode] = useState<'freehand' | 'points'>('freehand');
@@ -90,6 +92,22 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
             bgImageRef.current = null; // 关闭时清空，避免旧图在重开时闪烁
         };
     }, [isOpen]);
+
+    // Easing helpers（与投影端保持一致）
+    const easeLinear = (t: number) => t;
+    const easeInCubic = (t: number) => t * t * t;
+    const easeOutCubic = (t: number) => 1 - Math.pow(1 - t, 3);
+    const easeInOutCubic = (t: number) => t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    const applyEasing = (t: number) => {
+        const tt = Math.max(0, Math.min(1, t));
+        switch (easing) {
+            case 'linear': return easeLinear(tt);
+            case 'easeIn': return easeInCubic(tt);
+            case 'easeOut': return easeOutCubic(tt);
+            case 'easeInOut':
+            default: return easeInOutCubic(tt);
+        }
+    };
 
     // 绘制轨迹预览
     const drawTrajectoryPreview = useCallback(() => {
@@ -180,7 +198,8 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
 
         // 当前播放位置标记
         if (isPlaying) {
-            const progress = duration > 0 ? (currentTime / duration) : 0;
+            const rawProgress = duration > 0 ? (currentTime / duration) : 0;
+            const progress = applyEasing(rawProgress);
             let currentPos = { x: 0, y: 0 };
             if (mode === 'points' && keyframes.length > 1) {
                 for (let i = 0; i < keyframes.length - 1; i++) {
@@ -223,7 +242,7 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
             ctx.lineWidth = 2;
             ctx.stroke();
         }
-    }, [keyframes, selectedKeyframe, isPlaying, currentTime, duration, strokes, mode]);
+    }, [keyframes, selectedKeyframe, isPlaying, currentTime, duration, strokes, mode, easing]);
 
     useEffect(() => {
         drawTrajectoryPreview();
@@ -310,7 +329,13 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
         const animate = () => {
             const elapsed = Date.now() - startTime;
             const over = elapsed >= duration;
-            setCurrentTime(loop && duration > 0 ? (elapsed % duration) : elapsed);
+            if (loop && duration > 0) {
+                const cycle = elapsed % (duration * 2);
+                const progress = cycle <= duration ? (cycle / duration) : (1 - ((cycle - duration) / duration));
+                setCurrentTime(progress * duration);
+            } else {
+                setCurrentTime(elapsed);
+            }
             if (!over || loop) {
                 animationRef.current = requestAnimationFrame(animate);
             } else {
@@ -375,6 +400,7 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
             startTime: 0,
             duration,
             loop,
+            easing,
             keyframes: finalKeyframes.sort((a, b) => a.time - b.time)
         };
         onUpdate(trajectoryConfig);
@@ -494,7 +520,16 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                         />
                     </div>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-                        <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} /> 循环
+                        <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} /> 循环（往返）
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                        速度曲线:
+                        <select value={easing} onChange={(e) => setEasing(e.target.value)} style={{ background: '#1e1e2f', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '2px 6px' }}>
+                            <option value="linear">匀速（线性）</option>
+                            <option value="easeInOut">慢→快→慢</option>
+                            <option value="easeIn">缓入</option>
+                            <option value="easeOut">缓出</option>
+                        </select>
                     </label>
                     <button
                         onClick={isPlaying ? stopAnimation : playAnimation}

@@ -20,6 +20,7 @@ interface Element {
         startTime: number;
         duration: number;
         loop?: boolean;
+        easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
         keyframes: Array<{
             time: number; // 0-1
             x: number;
@@ -51,6 +52,13 @@ export default function ProjectionScreen() {
     const animationFrameRef = useRef<number | null>(null);
     const audioMap = useRef<Map<string, HTMLAudioElement>>(new Map());
     const audioDesired = useRef<Map<string, { src: string; isPlaying: boolean; loop: boolean; volume: number }>>(new Map());
+    const motionStartPlayed = useRef<Map<string, number>>(new Map());
+    // 防抖锁：在触发 play() 后的短时间内，不允许外部“期望状态”为 false 立即触发 pause()，避免 play/pause 竞态
+    const playLockUntil = useRef<Map<string, number>>(new Map());
+    // 手动播放覆盖：在手动单次播放期间，忽略外部 isPlaying=false 的暂停请求，直到 ended
+    const manualPlayOverride = useRef<Set<string>>(new Set());
+    // 手动一次性播放的独立音频实例，避免与期望状态引擎相互干扰
+    const manualAudioMap = useRef<Map<string, HTMLAudioElement>>(new Map());
 
     // 图像缓存
     const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
@@ -90,9 +98,56 @@ export default function ProjectionScreen() {
             audioEl = new Audio();
             audioEl.crossOrigin = 'anonymous';
             audioMap.current.set(element.id, audioEl);
+            // 绑定进度与结束事件，向主窗口汇报
+            const bindProgress = () => {
+                if ((audioEl as any).__progressBound) return;
+                (audioEl as any).__progressBound = true;
+                (audioEl as any).__endedSent = false;
+                (audioEl as any).__pendingPlay = false;
+                const sendInitial = () => {
+                    try {
+                        if ((window as any).electronAPI?.sendToMain) {
+                            (window as any).electronAPI.sendToMain({ type: 'AUDIO_PROGRESS', data: { id: element.id, currentTime: 0, duration: isFinite(audioEl!.duration) ? audioEl!.duration : 0, progress: 0 } });
+                        }
+                    } catch { }
+                };
+                audioEl!.addEventListener('play', () => { (audioEl as any).__endedSent = false; (audioEl as any).__pendingPlay = true; sendInitial(); });
+                audioEl!.addEventListener('playing', () => { (audioEl as any).__pendingPlay = false; });
+                const sendProgress = () => {
+                    const dur = isFinite(audioEl!.duration) && audioEl!.duration > 0 ? audioEl!.duration : 0;
+                    const cur = audioEl!.currentTime || 0;
+                    const progress = dur > 0 ? Math.min(1, Math.max(0, cur / dur)) : 0;
+                    try {
+                        if ((window as any).electronAPI?.sendToMain) {
+                            (window as any).electronAPI.sendToMain({ type: 'AUDIO_PROGRESS', data: { id: element.id, currentTime: cur, duration: dur, progress } });
+                        }
+                    } catch { }
+                    // 兜底：有些情况下 'ended' 事件不可靠，这里在接近尾声时主动上报一次
+                    if (!audioEl!.loop && dur > 0 && cur >= dur - 0.03 && !(audioEl as any).__endedSent) {
+                        (audioEl as any).__endedSent = true;
+                        try {
+                            if ((window as any).electronAPI?.sendToMain) {
+                                (window as any).electronAPI.sendToMain({ type: 'AUDIO_ENDED', data: { id: element.id } });
+                            }
+                        } catch { }
+                    }
+                };
+                audioEl!.addEventListener('timeupdate', sendProgress);
+                audioEl!.addEventListener('ended', () => {
+                    (audioEl as any).__endedSent = true;
+                    manualPlayOverride.current.delete(element.id);
+                    try {
+                        if ((window as any).electronAPI?.sendToMain) {
+                            (window as any).electronAPI.sendToMain({ type: 'AUDIO_ENDED', data: { id: element.id } });
+                        }
+                    } catch { }
+                });
+            };
+            bindProgress();
         }
         // 统一为绝对URL
-        const srcUrl = new URL(audioCfg.src, window.location.origin).href;
+        // 使用 href 而非 origin，兼容 file:// 场景，确保相对路径可被正确解析
+        const srcUrl = new URL(audioCfg.src, window.location.href).href;
         const desired = {
             src: srcUrl,
             isPlaying: !!audioCfg.isPlaying,
@@ -100,6 +155,39 @@ export default function ProjectionScreen() {
             volume: Math.max(0, Math.min(1, audioCfg.volume ?? 0.5))
         };
         const prevDesired = audioDesired.current.get(element.id);
+        // 若期望状态完全一致且 src 未变化，也要确保实际播放状态与期望一致（避免“已结束但 isPlaying=true”时无法再次播放）
+        if (prevDesired && prevDesired.src === desired.src && prevDesired.isPlaying === desired.isPlaying && prevDesired.loop === desired.loop && prevDesired.volume === desired.volume) {
+            // 同步静态属性
+            audioEl.loop = desired.loop;
+            audioEl.volume = desired.volume;
+            const nowPlaying = !audioEl.paused && !audioEl.ended && audioEl.currentTime > 0;
+            if (desired.isPlaying && !nowPlaying) {
+                try {
+                    const dur = isFinite(audioEl.duration) && audioEl.duration > 0 ? audioEl.duration : 0;
+                    if (audioEl.ended || (dur > 0 && audioEl.currentTime >= dur - 0.02)) {
+                        (audioEl as any).__endedSent = false;
+                        audioEl.currentTime = 0;
+                    }
+                } catch { }
+                // 设置短暂锁，避免后续 update 立刻 pause
+                playLockUntil.current.set(element.id, Date.now() + 800);
+                (audioEl as any).__pendingPlay = true;
+                audioEl.play().catch(err => {
+                    (audioEl as any).__pendingPlay = false;
+                    console.warn('音频播放失败:', err);
+                    try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_ERROR', data: { id: element.id, message: String(err) } }); } } catch { }
+                });
+            } else if (!desired.isPlaying && nowPlaying) {
+                const lock = playLockUntil.current.get(element.id) || 0;
+                const pending = !!(audioEl as any).__pendingPlay;
+                if (Date.now() < lock || pending || manualPlayOverride.current.has(element.id)) {
+                    // 忽略短时间内的反向暂停请求
+                } else {
+                    try { audioEl.pause(); } catch { }
+                }
+            }
+            return;
+        }
         audioDesired.current.set(element.id, desired);
 
         // 应用静态属性变更
@@ -115,18 +203,37 @@ export default function ProjectionScreen() {
             // 只在状态变化时操作，避免 play 后立刻 pause 的竞态
             const nowPlaying = !audioEl.paused && !audioEl.ended && audioEl.currentTime > 0;
             if (desired.isPlaying && !nowPlaying) {
-                audioEl.play().catch(err => console.warn('音频播放失败:', err));
+                try {
+                    const dur = isFinite(audioEl.duration) && audioEl.duration > 0 ? audioEl.duration : 0;
+                    if (audioEl.ended || (dur > 0 && audioEl.currentTime >= dur - 0.02)) {
+                        (audioEl as any).__endedSent = false;
+                        audioEl.currentTime = 0;
+                    }
+                } catch { }
+                playLockUntil.current.set(element.id, Date.now() + 800);
+                (audioEl as any).__pendingPlay = true;
+                audioEl.play().catch(err => {
+                    (audioEl as any).__pendingPlay = false;
+                    console.warn('音频播放失败:', err);
+                    try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_ERROR', data: { id: element.id, message: String(err) } }); } } catch { }
+                });
             } else if (!desired.isPlaying && nowPlaying) {
-                try { audioEl.pause(); } catch { }
+                const lock = playLockUntil.current.get(element.id) || 0;
+                const pending = !!(audioEl as any).__pendingPlay;
+                if (Date.now() < lock || pending || manualPlayOverride.current.has(element.id)) {
+                    // 忽略短时间内的反向暂停请求
+                } else {
+                    try { audioEl.pause(); } catch { }
+                }
             }
         };
 
         if (changeSrc) {
             // 等待资源可播放后再根据期望状态播放，避免 "play() request was interrupted by pause()"
-            const onCanPlay = () => { audioEl.removeEventListener('canplay', onCanPlay); applyPlayState(); };
+            const onCanPlay = () => { audioEl.removeEventListener('canplay', onCanPlay); try { if (desired.isPlaying) { (audioEl as any).__endedSent = false; audioEl.currentTime = 0; playLockUntil.current.set(element.id, Date.now() + 800); } } catch { } applyPlayState(); };
             audioEl.addEventListener('canplay', onCanPlay);
             // 也设置一个兜底超时
-            setTimeout(() => { try { audioEl.removeEventListener('canplay', onCanPlay); } catch { } applyPlayState(); }, 1500);
+            setTimeout(() => { try { audioEl.removeEventListener('canplay', onCanPlay); } catch { } if (desired.isPlaying) { (audioEl as any).__endedSent = false; try { audioEl.currentTime = 0; } catch { } playLockUntil.current.set(element.id, Date.now() + 800); } applyPlayState(); }, 1500);
         } else {
             applyPlayState();
         }
@@ -300,11 +407,34 @@ export default function ProjectionScreen() {
                     const traj = element.trajectory;
                     const duration = Math.max(1, traj.duration || 1);
                     const elapsed = now - traj.startTime;
-                    const progress = traj.loop ? ((elapsed % duration) / duration) : Math.min(elapsed / duration, 1);
-                    // 全局慢->快->慢（整体节奏），而非每段单独缓动
-                    const easedProgress = easeInOutCubic(progress);
+                    // 往返循环：起点->终点->起点
+                    let progress = 0;
+                    if (traj.loop) {
+                        const cycle = elapsed % (duration * 2);
+                        if (cycle <= duration) {
+                            progress = cycle / duration; // 正向 0->1
+                        } else {
+                            const back = cycle - duration;
+                            progress = 1 - (back / duration); // 反向 1->0
+                        }
+                    } else {
+                        progress = Math.min(elapsed / duration, 1);
+                    }
+                    // 根据配置选择速度曲线（默认 easeInOut）
+                    const easedProgress = applyEasing(progress, traj.easing);
 
                     // 轨迹插值
+                    // 当运动开始时（startTime 变化），若元素有音频，则自动播放一次（非循环）
+                    if (element.audio?.src) {
+                        const lastStamp = motionStartPlayed.current.get(element.id);
+                        if (lastStamp !== traj.startTime) {
+                            motionStartPlayed.current.set(element.id, traj.startTime);
+                            // 触发一次单次播放（统一走 updateElementAudio 以确保绑定进度/结束事件）
+                            const tempEl: Element = { ...element, audio: { ...element.audio, isPlaying: true, loop: false } } as Element;
+                            try { updateElementAudio(tempEl); } catch { }
+                        }
+                    }
+
                     const keyframes = traj.keyframes;
                     if (keyframes.length > 1) {
                         // 找到当前进度对应的关键帧
@@ -338,17 +468,35 @@ export default function ProjectionScreen() {
                         }
                     }
 
-                    // 若开启循环并到达周期末，重置该元素的 startTime 以持续循环
-                    if (traj.loop && elapsed >= duration) {
+                    // 往返循环无需重置 startTime，由双倍周期的取模实现
+
+                    // 若不循环且到达终点，停止动画并停止音频
+                    if (!traj.loop && elapsed >= duration) {
+                        const lastKf = (traj.keyframes && traj.keyframes.length > 0) ? traj.keyframes[traj.keyframes.length - 1] : undefined;
                         setForestState(prev => ({
                             ...prev,
                             elements: prev.elements.map(el => {
-                                if (el.id !== element.id || !el.trajectory) return el;
-                                return { ...el, trajectory: { ...el.trajectory, startTime: now } } as any;
+                                if (el.id !== element.id) return el;
+                                const newEl: any = { ...el, trajectory: { ...el.trajectory!, isAnimating: false } };
+                                if (lastKf) {
+                                    newEl.position = { x: lastKf.x, y: lastKf.y };
+                                    if (lastKf.scale !== undefined) newEl.scale = lastKf.scale;
+                                    if (lastKf.rotation !== undefined) newEl.rotation = lastKf.rotation;
+                                    if (lastKf.opacity !== undefined) newEl.opacity = lastKf.opacity;
+                                }
+                                if (newEl.audio) newEl.audio = { ...newEl.audio, isPlaying: false };
+                                return newEl;
                             })
                         }));
+                        // 主动通知主窗口音频已结束（此处是手动停止，不会触发 ended 事件）
+                        try {
+                            if ((window as any).electronAPI?.sendToMain) {
+                                (window as any).electronAPI.sendToMain({ type: 'AUDIO_ENDED', data: { id: element.id } });
+                            }
+                        } catch { }
                     }
                 }
+                // 不再强制运动中循环播放；手动播放与自动开场播放均为单次
 
                 // 设置变换
                 ctx.globalAlpha = currentOpacity;
@@ -542,12 +690,72 @@ export default function ProjectionScreen() {
                     } catch (e) { console.warn('快照失败', e); }
                     break;
                 }
+                case 'PLAY_AUDIO_ONCE': {
+                    const { id } = data || {};
+                    if (!id) break;
+                    const element = forestStateRef.current.elements.find(el => el.id === id);
+                    if (!element || !element.audio?.src) break;
+                    // 使用独立的手动一次性音频实例，完全避开期望状态引擎，杜绝被 pause 打断
+                    try {
+                        // 如已有残留实例，先清理
+                        const existing = manualAudioMap.current.get(id);
+                        if (existing) { try { existing.pause(); } catch { } manualAudioMap.current.delete(id); }
+                        const mAu = new Audio();
+                        mAu.crossOrigin = 'anonymous';
+                        const targetSrc = new URL(element.audio.src, window.location.href).href;
+                        mAu.src = targetSrc;
+                        mAu.loop = false;
+                        mAu.volume = Math.max(0, Math.min(1, element.audio.volume ?? 0.5));
+                        const sendInitial = () => {
+                            try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_PROGRESS', data: { id, currentTime: 0, duration: isFinite(mAu.duration) ? mAu.duration : 0, progress: 0 } }); } } catch { }
+                        };
+                        const onTime = () => {
+                            const dur = isFinite(mAu.duration) && mAu.duration > 0 ? mAu.duration : 0;
+                            const cur = mAu.currentTime || 0;
+                            const progress = dur > 0 ? Math.min(1, Math.max(0, cur / dur)) : 0;
+                            try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_PROGRESS', data: { id, currentTime: cur, duration: dur, progress } }); } } catch { }
+                            if (dur > 0 && cur >= dur - 0.03) { // 兜底 ended
+                                cleanup();
+                                try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_ENDED', data: { id } }); } } catch { }
+                            }
+                        };
+                        const cleanup = () => {
+                            try { mAu.removeEventListener('timeupdate', onTime); } catch { }
+                            try { mAu.removeEventListener('ended', onEnded); } catch { }
+                            try { mAu.removeEventListener('play', onPlay); } catch { }
+                            manualAudioMap.current.delete(id);
+                        };
+                        const onEnded = () => { cleanup(); try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_ENDED', data: { id } }); } } catch { } };
+                        const onPlay = () => { sendInitial(); };
+                        mAu.addEventListener('timeupdate', onTime);
+                        mAu.addEventListener('ended', onEnded);
+                        mAu.addEventListener('play', onPlay);
+                        manualAudioMap.current.set(id, mAu);
+                        try { mAu.currentTime = 0; } catch { }
+                        mAu.play().catch(err => { cleanup(); try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_ERROR', data: { id, message: String(err) } }); } } catch { } });
+                    } catch { }
+                    break;
+                }
                 case 'ADD_ELEMENT':
                     setForestState(prev => ({
                         ...prev,
                         elements: [...prev.elements, data]
                     }));
-                    try { updateElementAudio(data as any); } catch { }
+                    try {
+                        const el = data as Element;
+                        // 同步音频静态属性
+                        updateElementAudio(el as any);
+                        // 若上墙即开始运动，且配置了音频，则立即触发一次单次播放（统一通过 updateElementAudio）
+                        if (el.trajectory?.isAnimating && el.audio?.src) {
+                            const stamp = el.trajectory.startTime || Date.now();
+                            const lastStamp = motionStartPlayed.current.get(el.id);
+                            if (lastStamp !== stamp) {
+                                motionStartPlayed.current.set(el.id, stamp);
+                                const tempEl: Element = { ...el, audio: { ...el.audio, isPlaying: true, loop: false } } as Element;
+                                updateElementAudio(tempEl);
+                            }
+                        }
+                    } catch { }
                     break;
 
                 case 'UPDATE_ELEMENT':
@@ -567,6 +775,7 @@ export default function ProjectionScreen() {
                     {
                         const existing = audioMap.current.get(data.id);
                         if (existing) { try { existing.pause(); } catch { }; audioMap.current.delete(data.id); }
+                        audioDesired.current.delete(data.id);
                     }
                     break;
 
@@ -580,6 +789,42 @@ export default function ProjectionScreen() {
             const { type } = data;
 
             switch (type) {
+                case 'PLAY_AUDIO_ONCE': {
+                    const { id } = data.data || {};
+                    if (!id) break;
+                    const element = forestStateRef.current.elements.find(el => el.id === id);
+                    if (!element || !element.audio?.src) break;
+                    try {
+                        const existing = manualAudioMap.current.get(id);
+                        if (existing) { try { existing.pause(); } catch { } manualAudioMap.current.delete(id); }
+                        const mAu = new Audio();
+                        mAu.crossOrigin = 'anonymous';
+                        const targetSrc = new URL(element.audio.src, window.location.href).href;
+                        mAu.src = targetSrc;
+                        mAu.loop = false;
+                        mAu.volume = Math.max(0, Math.min(1, element.audio.volume ?? 0.5));
+                        const sendInitial = () => {
+                            try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_PROGRESS', data: { id, currentTime: 0, duration: isFinite(mAu.duration) ? mAu.duration : 0, progress: 0 } }); } } catch { }
+                        };
+                        const onTime = () => {
+                            const dur = isFinite(mAu.duration) && mAu.duration > 0 ? mAu.duration : 0;
+                            const cur = mAu.currentTime || 0;
+                            const progress = dur > 0 ? Math.min(1, Math.max(0, cur / dur)) : 0;
+                            try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_PROGRESS', data: { id, currentTime: cur, duration: dur, progress } }); } } catch { }
+                            if (dur > 0 && cur >= dur - 0.03) { cleanup(); try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_ENDED', data: { id } }); } } catch { } }
+                        };
+                        const cleanup = () => { try { mAu.removeEventListener('timeupdate', onTime); } catch { } try { mAu.removeEventListener('ended', onEnded); } catch { } try { mAu.removeEventListener('play', onPlay); } catch { } manualAudioMap.current.delete(id); };
+                        const onEnded = () => { cleanup(); try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_ENDED', data: { id } }); } } catch { } };
+                        const onPlay = () => { sendInitial(); };
+                        mAu.addEventListener('timeupdate', onTime);
+                        mAu.addEventListener('ended', onEnded);
+                        mAu.addEventListener('play', onPlay);
+                        manualAudioMap.current.set(id, mAu);
+                        try { mAu.currentTime = 0; } catch { }
+                        mAu.play().catch(err => { cleanup(); try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_ERROR', data: { id, message: String(err) } }); } } catch { } });
+                    } catch { }
+                    break;
+                }
                 case 'ADD_ELEMENT':
                     setForestState(prev => ({
                         ...prev,
@@ -606,6 +851,7 @@ export default function ProjectionScreen() {
                     {
                         const existing = audioMap.current.get(data.data.id);
                         if (existing) { try { existing.pause(); } catch { }; audioMap.current.delete(data.data.id); }
+                        audioDesired.current.delete(data.data.id);
                     }
                     break;
 
@@ -673,8 +919,26 @@ export default function ProjectionScreen() {
         return start + (end - start) * t;
     }
 
+    function easeLinear(t: number): number { return t; }
+    function easeInCubic(t: number): number { return t * t * t; }
+    function easeOutCubic(t: number): number { return 1 - Math.pow(1 - t, 3); }
     function easeInOutCubic(t: number): number {
         return t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2;
+    }
+
+    function applyEasing(t: number, mode?: string): number {
+        const tt = Math.max(0, Math.min(1, t));
+        switch (mode) {
+            case 'linear':
+                return easeLinear(tt);
+            case 'easeIn':
+                return easeInCubic(tt);
+            case 'easeOut':
+                return easeOutCubic(tt);
+            case 'easeInOut':
+            default:
+                return easeInOutCubic(tt);
+        }
     }
 
     function drawTreeSilhouettes(ctx: CanvasRenderingContext2D, width: number, height: number) {
