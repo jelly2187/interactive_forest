@@ -26,6 +26,9 @@ interface TrajectoryEditorModalProps {
             easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
             effectType?: 'none' | 'breathing' | 'swinging';
             effectContinue?: boolean;
+            effectPeriodMs?: number;
+            effectBreathAmp?: number;
+            effectSwingDeg?: number;
             keyframes: TrajectoryKeyframe[];
         };
     };
@@ -44,6 +47,9 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
     const [easing, setEasing] = useState<string>((element as any).trajectory?.easing ?? 'easeInOut');
     const [effectType, setEffectType] = useState<'none' | 'breathing' | 'swinging'>((element as any).trajectory?.effectType ?? 'none');
     const [effectContinue, setEffectContinue] = useState<boolean>((element as any).trajectory?.effectContinue ?? false);
+    const [effectPeriodMs, setEffectPeriodMs] = useState<number>((element as any).trajectory?.effectPeriodMs ?? 2000);
+    const [effectBreathAmp, setEffectBreathAmp] = useState<number>((element as any).trajectory?.effectBreathAmp ?? 0.08);
+    const [effectSwingDeg, setEffectSwingDeg] = useState<number>((element as any).trajectory?.effectSwingDeg ?? 10);
 
     // Freehand mode state
     // 暂时只保留关键点模式（禁用手绘）
@@ -449,6 +455,55 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                         /> 效果在到达终点后继续
                     </label>
                 </div>
+
+                {effectType !== 'none' && (
+                    <div style={{ marginBottom: 16, display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+                        <div>
+                            <label style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>
+                                强度：
+                                <span style={{ opacity: 0.8, marginLeft: 6 }}>
+                                    {effectType === 'breathing' ? `${Math.round(effectBreathAmp * 100)}%` : `${Math.round(effectSwingDeg)}°`}
+                                </span>
+                            </label>
+                            {effectType === 'breathing' ? (
+                                <input
+                                    type="range"
+                                    min={0}
+                                    max={0.3}
+                                    step={0.01}
+                                    value={effectBreathAmp}
+                                    onChange={(e) => setEffectBreathAmp(parseFloat(e.target.value))}
+                                    style={{ width: '100%' }}
+                                />
+                            ) : (
+                                <input
+                                    type="range"
+                                    min={0}
+                                    max={30}
+                                    step={1}
+                                    value={effectSwingDeg}
+                                    onChange={(e) => setEffectSwingDeg(parseInt(e.target.value))}
+                                    style={{ width: '100%' }}
+                                />
+                            )}
+                        </div>
+                        <div>
+                            <label style={{ display: 'block', marginBottom: 6, fontSize: 12 }}>
+                                周期：
+                                <span style={{ opacity: 0.8, marginLeft: 6 }}>{(effectPeriodMs / 1000).toFixed(1)}s</span>
+                            </label>
+                            <input
+                                type="range"
+                                min={500}
+                                max={5000}
+                                step={100}
+                                value={effectPeriodMs}
+                                onChange={(e) => setEffectPeriodMs(parseInt(e.target.value))}
+                                style={{ width: '100%' }}
+                            />
+                        </div>
+                    </div>
+                )}
 
                 {/* 关键帧列表 */}
                 <div style={{ marginBottom: '20px' }}>

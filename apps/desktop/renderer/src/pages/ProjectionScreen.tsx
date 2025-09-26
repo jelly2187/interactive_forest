@@ -23,6 +23,9 @@ interface Element {
         easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
         effectType?: 'none' | 'breathing' | 'swinging';
         effectContinue?: boolean;
+        effectPeriodMs?: number;
+        effectBreathAmp?: number;
+        effectSwingDeg?: number;
         keyframes: Array<{
             time: number; // 0-1
             x: number;
@@ -507,15 +510,15 @@ export default function ProjectionScreen() {
                     const shouldContinue = !traj.loop && !traj.isAnimating && continueAfter && (elapsed >= duration);
                     const isActive = traj.isAnimating || shouldContinue;
                     if (isActive && effect !== 'none') {
-                        const period = 2000; // ms，一个周期
+                        const period = Math.max(200, traj.effectPeriodMs ?? 2000); // ms，一个周期
                         const t = ((now - traj.startTime) % period) / period; // 0..1
                         const wave = Math.sin(t * Math.PI * 2);
                         if (effect === 'breathing') {
-                            const amp = 0.08; // 8% 尺寸起伏
+                            const amp = Math.max(0, Math.min(0.5, traj.effectBreathAmp ?? 0.08)); // 尺寸起伏
                             const mul = 1 + amp * wave;
                             currentScale *= mul;
                         } else if (effect === 'swinging') {
-                            const deg = 10; // ±10° 摇摆
+                            const deg = Math.max(0, Math.min(60, traj.effectSwingDeg ?? 10)); // ±deg 摇摆
                             const rad = (deg * Math.PI / 180) * wave;
                             currentRotation += rad;
                         }
