@@ -21,6 +21,8 @@ interface Element {
         duration: number;
         loop?: boolean;
         easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
+        effectType?: 'none' | 'breathing' | 'swinging';
+        effectContinue?: boolean;
         keyframes: Array<{
             time: number; // 0-1
             x: number;
@@ -403,8 +405,8 @@ export default function ProjectionScreen() {
                 let currentRotation = element.rotation;
                 let currentOpacity = element.opacity;
 
-                if (element.trajectory?.isAnimating) {
-                    const traj = element.trajectory;
+                const traj = element.trajectory;
+                if (traj?.isAnimating) {
                     const duration = Math.max(1, traj.duration || 1);
                     const elapsed = now - traj.startTime;
                     // 往返循环：起点->终点->起点
@@ -494,6 +496,29 @@ export default function ProjectionScreen() {
                                 (window as any).electronAPI.sendToMain({ type: 'AUDIO_ENDED', data: { id: element.id } });
                             }
                         } catch { }
+                    }
+                }
+                // 基于配置叠加呼吸/摇摆效果（动画中；或在非循环且到达终点后选择持续时）
+                if (traj) {
+                    const effect = traj.effectType ?? 'none';
+                    const continueAfter = !!traj.effectContinue;
+                    const duration = Math.max(1, traj.duration || 1);
+                    const elapsed = now - traj.startTime;
+                    const shouldContinue = !traj.loop && !traj.isAnimating && continueAfter && (elapsed >= duration);
+                    const isActive = traj.isAnimating || shouldContinue;
+                    if (isActive && effect !== 'none') {
+                        const period = 2000; // ms，一个周期
+                        const t = ((now - traj.startTime) % period) / period; // 0..1
+                        const wave = Math.sin(t * Math.PI * 2);
+                        if (effect === 'breathing') {
+                            const amp = 0.08; // 8% 尺寸起伏
+                            const mul = 1 + amp * wave;
+                            currentScale *= mul;
+                        } else if (effect === 'swinging') {
+                            const deg = 10; // ±10° 摇摆
+                            const rad = (deg * Math.PI / 180) * wave;
+                            currentRotation += rad;
+                        }
                     }
                 }
                 // 不再强制运动中循环播放；手动播放与自动开场播放均为单次

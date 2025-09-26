@@ -23,6 +23,9 @@ interface TrajectoryEditorModalProps {
             startTime: number;
             duration: number;
             loop?: boolean;
+            easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
+            effectType?: 'none' | 'breathing' | 'swinging';
+            effectContinue?: boolean;
             keyframes: TrajectoryKeyframe[];
         };
     };
@@ -39,15 +42,19 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
     // 轨迹循环默认不勾选；循环语义为往返（起点->终点->起点）
     const [loop, setLoop] = useState<boolean>(element.trajectory?.loop ?? false);
     const [easing, setEasing] = useState<string>((element as any).trajectory?.easing ?? 'easeInOut');
+    const [effectType, setEffectType] = useState<'none' | 'breathing' | 'swinging'>((element as any).trajectory?.effectType ?? 'none');
+    const [effectContinue, setEffectContinue] = useState<boolean>((element as any).trajectory?.effectContinue ?? false);
 
     // Freehand mode state
-    const [mode, setMode] = useState<'freehand' | 'points'>('freehand');
-    const [strokes, setStrokes] = useState<Array<Array<{ x: number; y: number }>>>([]);
-    const [isDrawing, setIsDrawing] = useState(false);
+    // 暂时只保留关键点模式（禁用手绘）
+    const mode: 'points' = 'points';
+    // const [mode, setMode] = useState<'freehand' | 'points'>('points');
+    // const [strokes, setStrokes] = useState<Array<Array<{ x: number; y: number }>>>([]);
+    // const [isDrawing, setIsDrawing] = useState(false);
 
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const bgImageRef = useRef<HTMLImageElement | null>(null);
-    const currentStrokeRef = useRef<Array<{ x: number; y: number }> | null>(null);
+    // const currentStrokeRef = useRef<Array<{ x: number; y: number }> | null>(null);
     const animationRef = useRef<number | null>(null);
 
     // 请求一次背景快照（打开时）
@@ -134,39 +141,10 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
             }
         }
 
-        // 手绘路径渲染（叠加层）
-        if (mode === 'freehand') {
-            ctx.strokeStyle = 'rgba(255, 193, 7, 0.9)';
-            ctx.lineWidth = 3;
-            ctx.lineJoin = 'round';
-            ctx.lineCap = 'round';
-            const list = Array.isArray(strokes) ? strokes : [];
-            list.forEach(stroke => {
-                if (!stroke || stroke.length < 2) return;
-                ctx.beginPath();
-                for (let i = 0; i < stroke.length; i++) {
-                    const p = stroke[i];
-                    const x = (p.x / 1920) * canvas.width;
-                    const y = (p.y / 1080) * canvas.height;
-                    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-                }
-                ctx.stroke();
-            });
-            if (currentStrokeRef.current && currentStrokeRef.current.length > 1) {
-                const stroke = currentStrokeRef.current;
-                ctx.beginPath();
-                for (let i = 0; i < stroke.length; i++) {
-                    const p = stroke[i];
-                    const x = (p.x / 1920) * canvas.width;
-                    const y = (p.y / 1080) * canvas.height;
-                    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-                }
-                ctx.stroke();
-            }
-        }
+        // 手绘路径渲染（禁用）
 
         // 关键帧路径与点（仅在关键点模式显示）
-        if (mode === 'points' && keyframes.length >= 1) {
+        if (keyframes.length >= 1) {
             ctx.strokeStyle = '#2196F3';
             ctx.lineWidth = 3;
             if (keyframes.length >= 2) {
@@ -212,25 +190,6 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                         break;
                     }
                 }
-            } else if (mode === 'freehand' && strokes.length > 0) {
-                const points: Array<{ x: number; y: number }> = [];
-                strokes.forEach(stroke => { if (stroke) stroke.forEach(p => points.push(p)); });
-                if (points.length >= 2) {
-                    const cum: number[] = [0];
-                    for (let i = 1; i < points.length; i++) {
-                        cum[i] = cum[i - 1] + Math.hypot(points[i].x - points[i - 1].x, points[i].y - points[i - 1].y);
-                    }
-                    const total = cum[cum.length - 1] || 1;
-                    const L = progress * total;
-                    let idx = 0;
-                    while (idx < cum.length - 1 && cum[idx + 1] < L) idx++;
-                    const segLen = cum[idx + 1] - cum[idx] || 1;
-                    const t = (L - cum[idx]) / segLen;
-                    const p0 = points[idx];
-                    const p1 = points[idx + 1];
-                    currentPos.x = p0.x + (p1.x - p0.x) * t;
-                    currentPos.y = p0.y + (p1.y - p0.y) * t;
-                }
             }
             const fx = (currentPos.x / 1920) * canvas.width;
             const fy = (currentPos.y / 1080) * canvas.height;
@@ -242,7 +201,7 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
             ctx.lineWidth = 2;
             ctx.stroke();
         }
-    }, [keyframes, selectedKeyframe, isPlaying, currentTime, duration, strokes, mode, easing]);
+    }, [keyframes, selectedKeyframe, isPlaying, currentTime, duration, mode, easing]);
 
     useEffect(() => {
         drawTrajectoryPreview();
@@ -250,11 +209,11 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
 
     // 点击添加关键帧（仅关键点模式）
     const handleCanvasClick = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-        if (mode === 'freehand') return;
         const canvas = canvasRef.current; if (!canvas) return;
         const rect = canvas.getBoundingClientRect();
-        const x = ((e.clientX - rect.left) / canvas.width) * 1920;
-        const y = ((e.clientY - rect.top) / canvas.height) * 1080;
+        // 使用 rect 尺寸，避免 CSS 缩放或 DPR 导致坐标偏差
+        const x = ((e.clientX - rect.left) / rect.width) * 1920;
+        const y = ((e.clientY - rect.top) / rect.height) * 1080;
         const newTime = keyframes.length > 0 ? Math.max(...keyframes.map(kf => kf.time)) + 0.2 : 0;
         const newKeyframe: TrajectoryKeyframe = {
             time: Math.min(newTime, 1),
@@ -268,45 +227,7 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
     }, [keyframes, element.scale, element.rotation, mode]);
 
     // 手绘模式：鼠标事件
-    const handleMouseDown = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-        if (mode !== 'freehand') return;
-        const canvas = canvasRef.current; if (!canvas) return;
-        const rect = canvas.getBoundingClientRect();
-        const x = ((e.clientX - rect.left) / canvas.width) * 1920;
-        const y = ((e.clientY - rect.top) / canvas.height) * 1080;
-        currentStrokeRef.current = [{ x, y }];
-        setIsDrawing(true);
-        drawTrajectoryPreview();
-    }, [mode, drawTrajectoryPreview]);
-
-    const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
-        if (mode !== 'freehand' || !isDrawing) return;
-        const canvas = canvasRef.current; if (!canvas) return;
-        const rect = canvas.getBoundingClientRect();
-        const x = ((e.clientX - rect.left) / canvas.width) * 1920;
-        const y = ((e.clientY - rect.top) / canvas.height) * 1080;
-        const stroke = currentStrokeRef.current; if (!stroke) return;
-        const last = stroke[stroke.length - 1];
-        const dx = x - last.x; const dy = y - last.y;
-        if (dx * dx + dy * dy < 4) return; // 2px 阈值
-        stroke.push({ x, y });
-        drawTrajectoryPreview();
-    }, [mode, isDrawing, drawTrajectoryPreview]);
-
-    const handleMouseUp = useCallback(() => {
-        if (mode !== 'freehand') return;
-        if (currentStrokeRef.current && currentStrokeRef.current.length > 1) {
-            setStrokes(prev => [...prev, currentStrokeRef.current as Array<{ x: number; y: number }>]);
-        }
-        currentStrokeRef.current = null;
-        setIsDrawing(false);
-        drawTrajectoryPreview();
-    }, [mode, drawTrajectoryPreview]);
-
-    const handleMouseLeaveCanvas = useCallback(() => {
-        if (mode !== 'freehand') return;
-        if (isDrawing) handleMouseUp();
-    }, [mode, isDrawing, handleMouseUp]);
+    // 手绘相关事件暂时禁用
 
     // 删除关键帧
     const deleteKeyframe = (index: number) => {
@@ -353,42 +274,11 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
     };
 
     // 将手绘笔划采样为关键帧
-    const strokesToKeyframes = useCallback((): TrajectoryKeyframe[] => {
-        const allPoints: Array<{ x: number; y: number }> = [];
-        strokes.forEach(stroke => { stroke.forEach(p => allPoints.push({ x: Math.round(p.x), y: Math.round(p.y) })); });
-        if (allPoints.length < 2) return [];
-        const cumlen: number[] = [0];
-        for (let i = 1; i < allPoints.length; i++) {
-            const dx = allPoints[i].x - allPoints[i - 1].x;
-            const dy = allPoints[i].y - allPoints[i - 1].y;
-            cumlen[i] = cumlen[i - 1] + Math.hypot(dx, dy);
-        }
-        const total = cumlen[cumlen.length - 1] || 1;
-        const targetCount = Math.min(60, Math.max(2, Math.round(total / 15)));
-        const keyfs: TrajectoryKeyframe[] = [];
-        for (let i = 0; i < targetCount; i++) {
-            const t = i / (targetCount - 1);
-            const L = t * total;
-            let idx = 0;
-            while (idx < cumlen.length - 1 && cumlen[idx + 1] < L) idx++;
-            const segLen = cumlen[idx + 1] - cumlen[idx] || 1;
-            const segT = (L - cumlen[idx]) / segLen;
-            const p0 = allPoints[idx];
-            const p1 = allPoints[idx + 1];
-            const x = Math.round(p0.x + (p1.x - p0.x) * segT);
-            const y = Math.round(p0.y + (p1.y - p0.y) * segT);
-            keyfs.push({ time: t, x, y, scale: element.scale, rotation: element.rotation, opacity: 1 });
-        }
-        return keyfs;
-    }, [strokes, element.scale, element.rotation]);
+    // 手绘到关键帧的转换暂时移除
 
     // 保存轨迹
     const handleSave = () => {
         let finalKeyframes = keyframes;
-        if (mode === 'freehand' && strokes.length >= 1) {
-            const kfs = strokesToKeyframes();
-            if (kfs.length >= 2) finalKeyframes = kfs;
-        }
         // 统一规范时间轴：按顺序等间距分布到 [0,1]
         if (finalKeyframes.length >= 2) {
             const sorted = [...finalKeyframes].sort((a, b) => (a.time ?? 0) - (b.time ?? 0));
@@ -401,6 +291,8 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
             duration,
             loop,
             easing,
+            effectType,
+            effectContinue,
             keyframes: finalKeyframes.sort((a, b) => a.time - b.time)
         };
         onUpdate(trajectoryConfig);
@@ -462,26 +354,9 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                 {/* 轨迹预览画布 */}
                 <div style={{ marginBottom: '20px' }}>
                     <div style={{ fontSize: '14px', marginBottom: '8px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                        <span>
-                            轨迹预览 {mode === 'points' ? '(点击添加关键帧)' : '(按住左键手绘路径)'}
-                        </span>
+                        <span>轨迹预览（点击添加关键帧）</span>
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-                            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-                                模式:
-                                <select value={mode} onChange={(e) => setMode(e.target.value as any)} style={{ background: '#1e1e2f', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '2px 6px' }}>
-                                    <option value="freehand">手绘</option>
-                                    <option value="points">关键点</option>
-                                </select>
-                            </label>
-                            {mode === 'freehand' && (
-                                <>
-                                    <button onClick={() => setStrokes(prev => prev.slice(0, -1))} disabled={strokes.length === 0} style={{ padding: '4px 8px', background: '#555', color: '#fff', border: 'none', borderRadius: 4, cursor: strokes.length ? 'pointer' : 'not-allowed' }}>撤回</button>
-                                    <button onClick={() => setStrokes([])} disabled={strokes.length === 0} style={{ padding: '4px 8px', background: '#555', color: '#fff', border: 'none', borderRadius: 4, cursor: strokes.length ? 'pointer' : 'not-allowed' }}>清空</button>
-                                </>
-                            )}
-                            {mode === 'points' && (
-                                <button onClick={() => setKeyframes([])} disabled={keyframes.length === 0} style={{ padding: '4px 8px', background: '#555', color: '#fff', border: 'none', borderRadius: 4, cursor: keyframes.length ? 'pointer' : 'not-allowed' }}>清空关键帧</button>
-                            )}
+                            <button onClick={() => setKeyframes([])} disabled={keyframes.length === 0} style={{ padding: '4px 8px', background: '#555', color: '#fff', border: 'none', borderRadius: 4, cursor: keyframes.length ? 'pointer' : 'not-allowed' }}>清空关键帧</button>
                         </div>
                     </div>
                     <canvas
@@ -489,10 +364,7 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                         width={600}
                         height={300}
                         onClick={handleCanvasClick}
-                        onMouseDown={handleMouseDown}
-                        onMouseMove={handleMouseMove}
-                        onMouseUp={handleMouseUp}
-                        onMouseLeave={handleMouseLeaveCanvas}
+                        // 手绘事件已禁用
                         style={{
                             border: '2px solid #666',
                             borderRadius: '4px',
@@ -520,7 +392,15 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                         />
                     </div>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-                        <input type="checkbox" checked={loop} onChange={(e) => setLoop(e.target.checked)} /> 循环（往返）
+                        <input
+                            type="checkbox"
+                            checked={loop}
+                            onChange={(e) => {
+                                const v = e.target.checked;
+                                setLoop(v);
+                                if (v && effectContinue) setEffectContinue(false);
+                            }}
+                        /> 循环（往返）
                     </label>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                         速度曲线:
@@ -544,6 +424,30 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                     >
                         {isPlaying ? '⏹️ 停止' : '▶️ 预览'}
                     </button>
+                </div>
+
+                {/* 运动效果设置 */}
+                <div style={{ marginBottom: '16px', display: 'flex', gap: 16, alignItems: 'center' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
+                        运动效果:
+                        <select
+                            value={effectType}
+                            onChange={(e) => setEffectType(e.target.value as any)}
+                            style={{ background: '#1e1e2f', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '2px 6px' }}
+                        >
+                            <option value="none">无</option>
+                            <option value="breathing">呼吸（尺寸起伏）</option>
+                            <option value="swinging">摇摆（角度起伏）</option>
+                        </select>
+                    </label>
+                    <label title={loop ? '已启用循环：效果持续不可用' : ''} style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, opacity: loop ? 0.6 : 1 }}>
+                        <input
+                            type="checkbox"
+                            disabled={loop}
+                            checked={effectContinue && !loop}
+                            onChange={(e) => setEffectContinue(e.target.checked)}
+                        /> 效果在到达终点后继续
+                    </label>
                 </div>
 
                 {/* 关键帧列表 */}
