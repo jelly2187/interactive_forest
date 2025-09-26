@@ -455,6 +455,240 @@ export default function ControlPanel() {
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [image, setImage] = useState<HTMLImageElement | null>(null);
     const [imageFile, setImageFile] = useState<File | null>(null);
+    // 摄像头相关状态
+    const [useCamera, setUseCamera] = useState(false);
+    const [videoDevices, setVideoDevices] = useState<MediaDeviceInfo[]>([]);
+    const [selectedDeviceId, setSelectedDeviceId] = useState<string | null>(null);
+    const videoRef = useRef<HTMLVideoElement>(null);
+    const cameraCanvasRef = useRef<HTMLCanvasElement>(null);
+    const [cameraError, setCameraError] = useState<string | null>(null);
+    const [capturing, setCapturing] = useState(false);
+    const [cameraSettings, setCameraSettings] = useState({ brightness: 0, contrast: 0, saturation: 0 });
+    const [cameraSupportedConstraints, setCameraSupportedConstraints] = useState<MediaTrackSupportedConstraints | null>(null);
+    const [colorRecoveryAttempts, setColorRecoveryAttempts] = useState(0);
+    const [autoForceColor, setAutoForceColor] = useState(true);
+
+    // ---- 摄像头辅助：分析帧是否近似灰度 ----
+    const analyzeFrameAndAutoEnhance = useCallback(() => {
+        if (!videoRef.current) return;
+        const v = videoRef.current;
+        if (v.videoWidth === 0 || v.videoHeight === 0) return;
+        const tmp = document.createElement('canvas');
+        const w = 160, h = 90; // 缩小提高性能
+        tmp.width = w; tmp.height = h;
+        const ctx = tmp.getContext('2d');
+        if (!ctx) return;
+        ctx.drawImage(v, 0, 0, w, h);
+        const imgData = ctx.getImageData(0, 0, w, h).data;
+        let sumR = 0, sumG = 0, sumB = 0;
+        const len = w * h;
+        for (let i = 0; i < imgData.length; i += 4) {
+            sumR += imgData[i]; sumG += imgData[i + 1]; sumB += imgData[i + 2];
+        }
+        const avgR = sumR / len, avgG = sumG / len, avgB = sumB / len;
+        // 计算简单“色彩分离度”：通道之间的平均绝对差
+        const colorSpread = (Math.abs(avgR - avgG) + Math.abs(avgR - avgB) + Math.abs(avgG - avgB)) / 3;
+        // 若色差极小（阈值经验：< 3），可能是灰度或红外
+        if (colorSpread < 3) {
+            // 仅当当前未手动设置滤镜或滤镜为 none 时，应用增强让用户看清（标注 data- flag）
+            if (videoRef.current && (!videoRef.current.dataset.enhanced || videoRef.current.dataset.enhanced === '0')) {
+                videoRef.current.style.filter = 'brightness(1.1) contrast(1.25) saturate(1.6)';
+                videoRef.current.dataset.enhanced = '1';
+                console.log('[Camera] 自动增强已应用（源流近似灰度）。');
+            }
+        }
+    }, []);
+
+    // 日志诊断当前帧平均 RGB
+    const logFrameStats = useCallback(() => {
+        if (!videoRef.current) return;
+        const v = videoRef.current;
+        if (!v.videoWidth) return;
+        const c = document.createElement('canvas');
+        c.width = 120; c.height = 68;
+        const ct = c.getContext('2d');
+        if (!ct) return;
+        ct.drawImage(v, 0, 0, c.width, c.height);
+        const data = ct.getImageData(0, 0, c.width, c.height).data;
+        let r = 0, g = 0, b = 0; const total = c.width * c.height;
+        for (let i = 0; i < data.length; i += 4) { r += data[i]; g += data[i + 1]; b += data[i + 2]; }
+        console.log('[Camera][FrameStats]', { avgR: +(r / total).toFixed(2), avgG: +(g / total).toFixed(2), avgB: +(b / total).toFixed(2) });
+    }, []);
+
+    // 强制彩色尝试：读取 capability 并设置较高的 saturation / contrast 等
+    const attemptColorRecovery = useCallback(async () => {
+        if (!videoRef.current) return;
+        const stream = videoRef.current.srcObject as MediaStream | null;
+        if (!stream) return;
+        const track = stream.getVideoTracks()[0];
+        if (!track) return;
+        setColorRecoveryAttempts(a => a + 1);
+        try {
+            // 优先使用 getCapabilities
+            const caps: any = track.getCapabilities ? track.getCapabilities() : {};
+            const adv: any[] = [];
+            const push = (k: string, frac = 0.8) => {
+                if (caps[k] && typeof caps[k].min === 'number' && typeof caps[k].max === 'number') {
+                    const val = caps[k].min + (caps[k].max - caps[k].min) * frac;
+                    const obj: any = {}; obj[k] = val; adv.push(obj);
+                }
+            };
+            push('saturation', 0.95);
+            push('contrast', 0.75);
+            push('brightness', 0.55);
+            push('sharpness', 0.5);
+            push('colorTemperature', 0.55);
+            if (adv.length === 0) {
+                console.log('[Camera][Recovery] 无可用图像 capability，回退 CSS 滤镜增强。');
+                if (videoRef.current) {
+                    videoRef.current.style.filter = 'brightness(1.15) contrast(1.35) saturate(1.9)';
+                    videoRef.current.dataset.enhanced = '1';
+                }
+                analyzeFrameAndAutoEnhance();
+                logFrameStats();
+                return;
+            }
+            console.log('[Camera][Recovery] 尝试 applyConstraints advanced=', adv);
+            await track.applyConstraints({ advanced: adv });
+            setTimeout(() => { analyzeFrameAndAutoEnhance(); logFrameStats(); }, 700);
+        } catch (err) {
+            console.warn('[Camera][Recovery] applyConstraints 失败，回退滤镜方案。', err);
+            if (videoRef.current) {
+                videoRef.current.style.filter = 'brightness(1.2) contrast(1.4) saturate(2.0)';
+                videoRef.current.dataset.enhanced = '1';
+            }
+            analyzeFrameAndAutoEnhance();
+        }
+    }, [analyzeFrameAndAutoEnhance, logFrameStats]);
+
+    // 初始化摄像头设备列表（过滤 IR / Depth 设备避免灰度）
+    useEffect(() => {
+        if (!useCamera) return;
+        let stream: MediaStream | null = null;
+        const init = async () => {
+            try {
+                const devices = await navigator.mediaDevices.enumerateDevices();
+                const vids = devices.filter(d => d.kind === 'videoinput').filter(d => {
+                    const label = (d.label || '').toLowerCase();
+                    // 过滤常见红外/深度摄像头关键词
+                    return !(label.includes('ir') || label.includes('infrared') || label.includes('depth') || label.includes('virtual'));
+                });
+                setVideoDevices(vids);
+                if (!selectedDeviceId && vids.length > 0) setSelectedDeviceId(vids[0].deviceId);
+            } catch (e) {
+                setCameraError('无法获取摄像头列表');
+            }
+        };
+        init();
+        return () => {
+            if (stream) {
+                const s = stream as unknown as MediaStream; // 断言为 MediaStream
+                try {
+                    (s.getTracks ? s.getTracks() : []).forEach((t: MediaStreamTrack) => t.stop());
+                } catch { /* ignore */ }
+            }
+        };
+    }, [useCamera]);
+
+    // 启动指定摄像头
+    useEffect(() => {
+        if (!useCamera || !selectedDeviceId) return;
+        let active = true;
+        let currentStream: MediaStream | null = null;
+        const start = async () => {
+            try {
+                if (currentStream) currentStream.getTracks().forEach(t => t.stop());
+                const constraints: MediaStreamConstraints = {
+                    video: { deviceId: { exact: selectedDeviceId }, width: { ideal: 1280 }, height: { ideal: 720 } }
+                };
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                currentStream = stream;
+                const track = stream.getVideoTracks()[0];
+                setCameraSupportedConstraints(navigator.mediaDevices.getSupportedConstraints());
+                if (videoRef.current) {
+                    videoRef.current.srcObject = stream;
+                    // 重置任何之前的滤镜，避免上一设备残留
+                    videoRef.current.style.filter = 'none';
+                    if (videoRef.current.dataset) videoRef.current.dataset.enhanced = '0';
+                    await videoRef.current.play().catch(() => { });
+                    // 初次延迟分析灰度
+                    setTimeout(() => {
+                        analyzeFrameAndAutoEnhance();
+                        if (autoForceColor) {
+                            // 再延时一点点执行强制彩色（保证 metadata 已经稳定）
+                            setTimeout(() => {
+                                attemptColorRecovery();
+                            }, 250);
+                        }
+                    }, 400);
+                }
+                console.log('[Camera] track settings:', track.getSettings ? track.getSettings() : {});
+            } catch (e) {
+                setCameraError('开启摄像头失败: ' + (e instanceof Error ? e.message : '未知错误'));
+            }
+        };
+        start();
+        return () => {
+            active = false;
+            if (currentStream) currentStream.getTracks().forEach(t => t.stop());
+        };
+    }, [useCamera, selectedDeviceId, analyzeFrameAndAutoEnhance, attemptColorRecovery, autoForceColor]);
+
+    // 使用 CSS filter 进行预览层面的调节，避免不兼容的硬件约束导致画面灰/卡住
+    const applyCameraCssFilters = useCallback(() => {
+        if (!videoRef.current) return;
+        const b = 1 + cameraSettings.brightness;  // 基于 1 的增减
+        const c = 1 + cameraSettings.contrast;
+        const s = 1 + cameraSettings.saturation;
+        const filter = `brightness(${Math.max(0.2, b).toFixed(2)}) contrast(${Math.max(0.2, c).toFixed(2)}) saturate(${Math.max(0.2, s).toFixed(2)})`;
+        videoRef.current.style.filter = filter;
+    }, [cameraSettings]);
+
+    useEffect(() => { applyCameraCssFilters(); }, [applyCameraCssFilters]);
+
+    // 拍照 -> 生成 base64 并初始化 session
+    const captureFromCamera = useCallback(async () => {
+        if (!videoRef.current) return;
+        setCapturing(true);
+        try {
+            const video = videoRef.current;
+            const canvas = cameraCanvasRef.current || document.createElement('canvas');
+            canvas.width = video.videoWidth || 1280;
+            canvas.height = video.videoHeight || 720;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
+            ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+            const dataUrl = canvas.toDataURL('image/png');
+            // 初始化后端 session
+            const initRes = await apiService.initSessionFromBase64(dataUrl, `camera_${Date.now()}.png`);
+            if (!initRes.success) {
+                setError(initRes.error || '摄像头图片会话初始化失败');
+                return;
+            }
+            // 用 <img> 加载以便后续流程复用 image 变量
+            const img = new Image();
+            img.onload = () => {
+                setImage(img);
+                setImageFile(null); // 摄像头模式不需要本地文件
+                setSessionId(initRes.sessionId || null);
+                setCurrentStep('roi_selection');
+                // 拍照成功后自动关闭摄像头预览并释放媒体流
+                if (videoRef.current?.srcObject) {
+                    try {
+                        const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
+                        tracks.forEach(t => t.stop());
+                    } catch { /* ignore */ }
+                    videoRef.current!.srcObject = null;
+                }
+                setUseCamera(false);
+            };
+            img.src = dataUrl;
+        } catch (e) {
+            setError('拍照失败: ' + (e instanceof Error ? e.message : '未知错误'));
+        } finally {
+            setCapturing(false);
+        }
+    }, [apiService]);
     const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
 
     // 工作流状态
@@ -901,8 +1135,11 @@ export default function ControlPanel() {
 
     // 执行分割
     const performSegmentation = useCallback(async () => {
-        if (!imageFile || points.length === 0 || currentROIIndex >= roiBoxes.length) {
-            setError('请确保已选择ROI区域并添加标注点');
+        // 允许两种模式：
+        // 1) 本地文件模式：imageFile 存在
+        // 2) 摄像头模式：sessionId 已存在（通过 initSessionFromBase64 创建）
+        if ((!imageFile && !sessionId) || points.length === 0 || currentROIIndex >= roiBoxes.length) {
+            setError('请确保已选择ROI区域并添加标注点（若为摄像头拍照，需等待图片初始化完成）');
             return;
         }
 
@@ -914,7 +1151,8 @@ export default function ControlPanel() {
             const currentROI = roiBoxes[currentROIIndex];
 
             const response = await apiService.performSegmentation({
-                file: imageFile,
+                file: imageFile || undefined,
+                sessionId: sessionId || undefined,
                 points: points,
                 roiBox: currentROI // 传递ROI坐标给后端
             });
@@ -1452,7 +1690,48 @@ export default function ControlPanel() {
                 <div style={{ width: '45%', backgroundColor: '#2a2a3e', borderLeft: '2px solid #4a4a6e', display: 'flex', flexDirection: 'column', minWidth: 400, overflow: 'hidden' }}>
                     <div style={{ padding: 15, borderBottom: '1px solid #4a4a6e', flexShrink: 0 }}>
                         <input ref={fileInputRef} type='file' accept='image/*' onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])} style={{ display: 'none' }} />
-                        <button onClick={() => fileInputRef.current?.click()} style={{ width: '100%', padding: 12, backgroundColor: '#4CAF50', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>📁 选择图片</button>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                            <button onClick={() => fileInputRef.current?.click()} style={{ flex: 1, padding: 12, backgroundColor: '#4CAF50', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>📁 选择图片</button>
+                            <button onClick={() => setUseCamera(c => !c)} style={{ width: 140, padding: 12, backgroundColor: useCamera ? '#607D8B' : '#009688', color: 'white', border: 'none', borderRadius: 6, cursor: 'pointer' }}>{useCamera ? '🛑 关闭摄像头' : '📷 摄像头'}</button>
+                        </div>
+                        {useCamera && (
+                            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 10 }}>
+                                <div style={{ display: 'flex', gap: 8 }}>
+                                    <select value={selectedDeviceId || ''} onChange={e => setSelectedDeviceId(e.target.value)} style={{ flex: 1, padding: 6, background: '#1f1f33', color: 'white', border: '1px solid #555', borderRadius: 4 }}>
+                                        {videoDevices.map(d => <option key={d.deviceId} value={d.deviceId}>{d.label || `摄像头 ${d.deviceId.slice(0, 6)}`}</option>)}
+                                    </select>
+                                    <button onClick={captureFromCamera} disabled={capturing} style={{ width: 120, padding: 8, backgroundColor: '#FF9800', color: 'white', border: 'none', borderRadius: 4, cursor: capturing ? 'not-allowed' : 'pointer' }}>{capturing ? '处理中...' : '📸 拍照'}</button>
+                                </div>
+                                <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, userSelect: 'none' }}>
+                                    <input type='checkbox' checked={autoForceColor} onChange={e => setAutoForceColor(e.target.checked)} /> 启动后自动强制彩色
+                                </label>
+                                <div style={{ position: 'relative', width: '100%', background: '#111', border: '1px solid #444', borderRadius: 6 }}>
+                                    <video ref={videoRef} style={{ width: '100%', borderRadius: 6 }} playsInline muted />
+                                    <canvas ref={cameraCanvasRef} style={{ display: 'none' }} />
+                                    <div style={{ position: 'absolute', top: 4, left: 6, fontSize: 10, background: 'rgba(0,0,0,0.45)', padding: '2px 6px', borderRadius: 4, pointerEvents: 'none' }}>
+                                        尝试: {colorRecoveryAttempts}
+                                    </div>
+                                </div>
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                    <label style={{ fontSize: 11 }}>亮度: {(cameraSettings.brightness >= 0 ? '+' : '') + cameraSettings.brightness.toFixed(1)}
+                                        <input type='range' min='-0.5' max='0.5' step='0.05' value={cameraSettings.brightness} onChange={e => setCameraSettings(s => ({ ...s, brightness: parseFloat(e.target.value) }))} />
+                                    </label>
+                                    <label style={{ fontSize: 11 }}>对比度: {(cameraSettings.contrast >= 0 ? '+' : '') + cameraSettings.contrast.toFixed(1)}
+                                        <input type='range' min='-0.5' max='0.5' step='0.05' value={cameraSettings.contrast} onChange={e => setCameraSettings(s => ({ ...s, contrast: parseFloat(e.target.value) }))} />
+                                    </label>
+                                    <label style={{ fontSize: 11 }}>饱和度: {(cameraSettings.saturation >= 0 ? '+' : '') + cameraSettings.saturation.toFixed(1)}
+                                        <input type='range' min='-0.5' max='0.5' step='0.05' value={cameraSettings.saturation} onChange={e => setCameraSettings(s => ({ ...s, saturation: parseFloat(e.target.value) }))} />
+                                    </label>
+                                    <div style={{ display: 'flex', gap: 8 }}>
+                                        <button style={{ flex: 1, padding: '4px 6px', fontSize: 11, background: '#455A64', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }} onClick={() => setCameraSettings({ brightness: 0, contrast: 0, saturation: 0 })}>♻️ 重置</button>
+                                        <button style={{ flex: 1, padding: '4px 6px', fontSize: 11, background: '#607D8B', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }} onClick={() => { if (videoRef.current) { videoRef.current.style.filter = 'none'; if (videoRef.current.dataset) videoRef.current.dataset.enhanced = '0'; } setCameraSettings({ brightness: 0, contrast: 0, saturation: 0 }); }}>🧹 清除滤镜</button>
+                                        <button style={{ flex: 1, padding: '4px 6px', fontSize: 11, background: '#009688', color: 'white', border: 'none', borderRadius: 4, cursor: 'pointer' }} onClick={attemptColorRecovery}>🎨 强制彩色</button>
+                                    </div>
+                                    <div style={{ fontSize: 10, color: '#aaa', lineHeight: 1.3 }}>说明：<br />• 滤镜只影响预览，不改动源数据<br />• “强制彩色” 会尝试 applyConstraints (saturation/contrast 等)<br />• 若仍保持灰度，多数为驱动仅输出单色(Y)或 IR 流，需换设备/驱动</div>
+                                    {cameraError && <div style={{ color: '#f44336', fontSize: 12 }}>{cameraError}</div>}
+                                </div>
+                            </div>
+                        )}
                     </div>
                     <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column' }}>
                         {/* ROI管理 */}
@@ -1558,7 +1837,18 @@ export default function ControlPanel() {
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <h4 style={{ margin: 0 }}>🎭 舞台元素</h4>
                             {processedElements.length > 0 && (
-                                <button onClick={() => { processedElements.forEach(el => sendProjectionMessage({ type: 'REMOVE_ELEMENT', data: { id: el.id } })); setProcessedElements([]); }} style={{ padding: '4px 8px', backgroundColor: '#f44336', color: 'white', border: 'none', borderRadius: 4, fontSize: 10, cursor: 'pointer' }}>🗑️ 清空舞台</button>
+                                <button onClick={async () => {
+                                    // 先通知投影端移除
+                                    processedElements.forEach(el => sendProjectionMessage({ type: 'REMOVE_ELEMENT', data: { id: el.id } }));
+                                    // 后端批量删除（并行）
+                                    const names = processedElements
+                                        .map(el => el.image.split('/').pop())
+                                        .filter(n => n && n.startsWith('seg_')) as string[];
+                                    if (names.length) {
+                                        Promise.all(names.map(n => apiService.deleteAsset(n).then(r => !r.success && console.warn('删除失败', n, r.error))));
+                                    }
+                                    setProcessedElements([]);
+                                }} style={{ padding: '4px 8px', backgroundColor: '#f44336', color: 'white', border: 'none', borderRadius: 4, fontSize: 10, cursor: 'pointer' }}>🗑️ 清空舞台</button>
                             )}
                         </div>
                     </div>
@@ -1708,7 +1998,16 @@ export default function ControlPanel() {
                                                                 setProcessedElements(prev => prev.map(el => el.id === element.id ? { ...el, visible: true, trajectory: update.trajectory || el.trajectory } : el));
                                                             }}>⬆️ 上墙</button>
                                                     )}
-                                                    <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#f44336', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={() => { if (element.published) { sendProjectionMessage({ type: 'REMOVE_ELEMENT', data: { id: element.id } }); } setProcessedElements(prev => prev.filter(el => el.id !== element.id)); }}>🗑️ 删除</button>
+                                                    <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#f44336', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={async () => {
+                                                        if (element.published) { sendProjectionMessage({ type: 'REMOVE_ELEMENT', data: { id: element.id } }); }
+                                                        // 提取文件名（只删除我们生成的 seg_ 前缀文件）
+                                                        const base = element.image.split('/').pop();
+                                                        if (base && base.startsWith('seg_')) {
+                                                            const res = await apiService.deleteAsset(base);
+                                                            if (!res.success) console.warn('后端删除文件失败', base, res.error);
+                                                        }
+                                                        setProcessedElements(prev => prev.filter(el => el.id !== element.id));
+                                                    }}>🗑️ 删除</button>
                                                 </div>
                                             </div>
                                         </div>

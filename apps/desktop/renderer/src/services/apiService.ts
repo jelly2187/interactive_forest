@@ -7,9 +7,9 @@ export interface Point {
 }
 
 export interface SegmentationRequest {
-    file: File;
+    file?: File; // 摄像头模式下不再需要文件
     points: Point[];
-    sessionId?: string; // Optional session ID for reuse
+    sessionId?: string; // 已有会话（如摄像头截图）
     roiBox?: { x: number; y: number; width: number; height: number }; // ROI框坐标
 }
 
@@ -118,6 +118,23 @@ class ApiService {
         }
     }
 
+    // 通过 base64 直接初始化会话（用于摄像头截图）
+    async initSessionFromBase64(dataUrl: string, logicalName: string = 'camera_capture.png'): Promise<{ success: boolean, sessionId?: string, width?: number, height?: number, error?: string }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/sam/init`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image_b64: dataUrl, image_name: logicalName, keep_session: true })
+            });
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const result = await response.json();
+            return { success: true, sessionId: result.session_id, width: result.width, height: result.height };
+        } catch (error) {
+            console.error('Session init (base64) error:', error);
+            return { success: false, error: error instanceof Error ? error.message : '初始化会话失败' };
+        }
+    }
+
     // 将文件转换为base64
     private fileToBase64(file: File): Promise<string> {
         return new Promise((resolve, reject) => {
@@ -136,12 +153,12 @@ class ApiService {
             // 如果没有提供sessionId，先初始化会话
             let sessionId = request.sessionId;
             if (!sessionId) {
+                if (!request.file) {
+                    return { success: false, error: '缺少会话：未提供文件且无 sessionId' };
+                }
                 const initResult = await this.initSession(request.file);
                 if (!initResult.success) {
-                    return {
-                        success: false,
-                        error: initResult.error || '初始化会话失败'
-                    };
+                    return { success: false, error: initResult.error || '初始化会话失败' };
                 }
                 sessionId = initResult.sessionId!;
             }
@@ -313,6 +330,24 @@ class ApiService {
         } catch (error) {
             console.error('Server info error:', error);
             return null;
+        }
+    }
+
+    // 删除资产（png）
+    async deleteAsset(name: string): Promise<{ success: boolean; error?: string }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/assets/delete`, {
+                method: 'DELETE',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name })
+            });
+            if (!response.ok) {
+                const txt = await response.text();
+                return { success: false, error: `删除失败: ${response.status} ${txt}` };
+            }
+            return { success: true };
+        } catch (e) {
+            return { success: false, error: e instanceof Error ? e.message : '删除请求失败' };
         }
     }
 
