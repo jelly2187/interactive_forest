@@ -50,7 +50,10 @@ class SamEngine:
         image_bgr = self._decode_image(image_path, image_b64)
         h, w = image_bgr.shape[:2]
         sid = str(uuid.uuid4())
-        tmp_dir = Path("assets/tmp") / sid
+        # 增加时间前缀，便于溯源与调试：YYYYMMDD_HHMMSS_<session-uuid>
+        import time
+        time_prefix = time.strftime('%Y%m%d_%H%M%S')
+        tmp_dir = Path("assets/tmp") / f"{time_prefix}_{sid}"
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
         predictor = SamPredictor(self._model)

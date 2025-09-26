@@ -1041,13 +1041,13 @@ export default function ControlPanel() {
             ));
 
             // 创建处理后的元素
+            // 直接使用导出文件名作为名称，便于与本地文件对应
+            const fileName = exportResult.spritePath ? exportResult.spritePath.split(/[/\\]/).pop() : undefined;
             const newElement: ProcessedElement = {
                 id: `element-${Date.now()}`,
-                name: `${currentROI.label}_元素`,
-                // 将文件系统路径转换为HTTP URL
-                image: exportResult.spritePath ?
-                    `http://localhost:7001/files/${exportResult.spritePath.split(/[/\\]/).pop()}` :
-                    candidate.mask,
+                name: fileName || `${currentROI.label}_元素`,
+                // 使用相对路径，避免不同窗口或端口差异（ProjectionScreen 内部用 new URL 解析）
+                image: fileName ? `/files/${fileName}` : candidate.mask,
                 position: {
                     // 使用原图的绝对坐标系统，而不是ROI的相对坐标
                     x: currentROI.x + currentROI.width / 2,
@@ -1065,7 +1065,8 @@ export default function ControlPanel() {
                 }
             };
 
-            setProcessedElements(prev => [...prev, newElement]);
+            // 新元素插入到列表最前，保证在右侧舞台元素面板顶部显示
+            setProcessedElements(prev => [newElement, ...prev]);
 
             // 重置画笔状态
             if (isRefining) {
@@ -1092,32 +1093,80 @@ export default function ControlPanel() {
 
     // 删除ROI
     const deleteROI = useCallback((index: number) => {
-        setRoiBoxes(prev => prev.filter((_, i) => i !== index));
+        setRoiBoxes(prev => {
+            const next = prev.filter((_, i) => i !== index);
+            // 如果删除后没有ROI了，自动回到 ROI 选框阶段
+            if (next.length === 0) {
+                setCurrentStep('roi_selection');
+                setCurrentROIIndex(0);
+            } else {
+                // 调整当前索引（保持在合法范围内）
+                if (index < currentROIIndex) {
+                    setCurrentROIIndex(ci => Math.max(0, ci - 1));
+                } else if (index === currentROIIndex) {
+                    setCurrentROIIndex(ci => Math.min(ci, next.length - 1));
+                }
+            }
+            return next;
+        });
 
-        // 调整当前索引
-        if (index <= currentROIIndex && currentROIIndex > 0) {
-            setCurrentROIIndex(prev => prev - 1);
-        } else if (index < currentROIIndex) {
-            // 不需要调整
-        } else if (index === currentROIIndex && index === roiBoxes.length - 1) {
-            setCurrentROIIndex(Math.max(0, roiBoxes.length - 2));
-        }
-
+        // 清理与当前 ROI 相关的中间状态
         setPoints([]);
         setCandidates([]);
         setSelectedCandidate(null);
-    }, [currentROIIndex, roiBoxes.length]);
+    }, [currentROIIndex]);
 
     // 重置整个工作流
     const resetWorkflow = useCallback(() => {
+        // 仅重置 ROI 分割相关流程，不清空已生成并可能已发布到舞台的元素
         setRoiBoxes([]);
         setPoints([]);
         setCandidates([]);
         setSelectedCandidate(null);
         setCurrentROIIndex(0);
         setCurrentStep('roi_selection');
-        setProcessedElements([]);
         setError(null);
+        // processedElements 保留，防止舞台元素被意外清空
+    }, []);
+
+    // ---- 启动时扫描本地 apps/output 目录（ Electron 主进程需暴露一个 API 或已将其静态托管到 /files ）----
+    // 当前后端已把 OUTPUT_DIR 静态挂到 /files，因此仍复用 /assets/list
+    // 修复：避免重复添加，严格基于文件名判重，并直接使用文件名作为元素名称
+    const restoreOnceRef = useRef(false);
+    useEffect(() => {
+        if (restoreOnceRef.current) return; // 防止 React 严格模式开发环境双调用
+        restoreOnceRef.current = true;
+        const apiBase = (window as any).__API_BASE__ || '';
+        const existingNames = new Set<string>();
+        processedElements.forEach(el => { const base = el.image.split('/').pop(); if (base) existingNames.add(base); });
+        fetch(`${apiBase}/assets/list`).then(r => r.json()).then((files: Array<{ name: string; url: string; }>) => {
+            // 再次实时去重（可能在 fetch 前用户已新增元素）
+            const currentNames = new Set<string>();
+            processedElements.forEach(el => { const b = el.image.split('/').pop(); if (b) currentNames.add(b); });
+            const additions: ProcessedElement[] = [];
+            files.forEach(f => {
+                if (currentNames.has(f.name)) return;
+                const relPath = f.url.startsWith('/files/') ? f.url : `/files/${f.name}`;
+                additions.push({
+                    id: `restored-${f.name}-${Date.now()}-${Math.random().toString(16).slice(2, 6)}`,
+                    name: f.name,
+                    image: relPath,
+                    position: { x: 960, y: 540 },
+                    scale: 1,
+                    rotation: 0,
+                    visible: false,
+                    published: false,
+                } as ProcessedElement);
+            });
+            if (additions.length > 0) {
+                setProcessedElements(prev => {
+                    const nameSet = new Set(prev.map(p => p.image.split('/').pop()));
+                    const filtered = additions.filter(a => !nameSet.has(a.image.split('/').pop()!));
+                    return filtered.length ? [...prev, ...filtered] : prev;
+                });
+            }
+        }).catch(err => console.warn('加载已有输出元素失败:', err));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     // 画笔润色功能
@@ -1504,7 +1553,7 @@ export default function ControlPanel() {
                     </div>
                 </div>
                 {/* 右侧元素列表 */}
-                <div style={{ width: '20%', backgroundColor: '#1f1f33', display: 'flex', flexDirection: 'column', minWidth: 260, overflow: 'hidden' }}>
+                <div style={{ width: '26%', backgroundColor: '#1f1f33', display: 'flex', flexDirection: 'column', minWidth: 340, overflow: 'hidden' }}>
                     <div style={{ padding: 15, borderBottom: '2px solid #4a4a6e', backgroundColor: '#2a2a3e', flexShrink: 0 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                             <h4 style={{ margin: 0 }}>🎭 舞台元素</h4>
@@ -1612,10 +1661,52 @@ export default function ControlPanel() {
                                                         </>
                                                     )}
                                                     {/* 上墙/下墙 */}
-                                                    {element.published ? (
-                                                        <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#795548', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={() => { sendProjectionMessage({ type: 'REMOVE_ELEMENT', data: { id: element.id } }); setProcessedElements(prev => prev.map(el => el.id === element.id ? { ...el, published: false, audio: el.audio ? { ...el.audio, isPlaying: false } : el.audio } : el)); setAudioProgress(prev => { const next = new Map(prev); next.set(element.id, 0); return next; }); }}>⬇️ 下墙</button>
-                                                    ) : (
-                                                        <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#4CAF50', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={() => { const hasValidKeyframes = Array.isArray(element.trajectory?.keyframes) && (element.trajectory!.keyframes.length >= 2); const payload = { ...element, visible: true, opacity: 1, audio: element.audio ? { ...element.audio, isPlaying: false } : undefined, trajectory: element.trajectory ? { ...element.trajectory, isAnimating: hasValidKeyframes ? true : !!element.trajectory.isAnimating, startTime: hasValidKeyframes ? Date.now() : (element.trajectory.startTime || Date.now()) } : undefined }; sendProjectionMessage({ type: 'ADD_ELEMENT', data: payload }); setProcessedElements(prev => prev.map(el => el.id === element.id ? { ...el, published: true, visible: true, audio: payload.audio || el.audio, trajectory: payload.trajectory || el.trajectory } : el)); setAudioProgress(prev => { const next = new Map(prev); next.set(element.id, 0); return next; }); }}>⬆️ 上墙</button>
+                                                    {(!element.published) && (
+                                                        // 首次上墙：ADD_ELEMENT
+                                                        <button
+                                                            style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#4CAF50', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }}
+                                                            onClick={() => {
+                                                                const hasValidKeyframes = Array.isArray(element.trajectory?.keyframes) && (element.trajectory!.keyframes.length >= 2);
+                                                                const payload = {
+                                                                    ...element,
+                                                                    visible: true,
+                                                                    opacity: 1,
+                                                                    published: true,
+                                                                    audio: element.audio ? { ...element.audio, isPlaying: false } : undefined,
+                                                                    trajectory: element.trajectory ? {
+                                                                        ...element.trajectory,
+                                                                        isAnimating: hasValidKeyframes ? true : !!element.trajectory.isAnimating,
+                                                                        startTime: hasValidKeyframes ? Date.now() : (element.trajectory.startTime || Date.now())
+                                                                    } : undefined
+                                                                };
+                                                                sendProjectionMessage({ type: 'ADD_ELEMENT', data: payload });
+                                                                setProcessedElements(prev => prev.map(el => el.id === element.id ? { ...el, published: true, visible: true, audio: payload.audio || el.audio, trajectory: payload.trajectory || el.trajectory } : el));
+                                                                setAudioProgress(prev => { const next = new Map(prev); next.set(element.id, 0); return next; });
+                                                            }}>⬆️ 上墙</button>
+                                                    )}
+                                                    {(element.published && element.visible) && (
+                                                        // 已发布且当前显示：下墙 -> 隐藏
+                                                        <button
+                                                            style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#795548', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }}
+                                                            onClick={() => {
+                                                                sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: { id: element.id, visible: false } });
+                                                                setProcessedElements(prev => prev.map(el => el.id === element.id ? { ...el, visible: false, audio: el.audio ? { ...el.audio, isPlaying: false } : el.audio } : el));
+                                                                setAudioProgress(prev => { const next = new Map(prev); next.set(element.id, 0); return next; });
+                                                            }}>⬇️ 下墙</button>
+                                                    )}
+                                                    {(element.published && !element.visible) && (
+                                                        // 已发布但隐藏：再次显示（仍称“上墙”统一文案）
+                                                        <button
+                                                            style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#3f51b5', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }}
+                                                            onClick={() => {
+                                                                const hasValidKeyframes = Array.isArray(element.trajectory?.keyframes) && (element.trajectory!.keyframes.length >= 2);
+                                                                const update: any = { id: element.id, visible: true };
+                                                                if (hasValidKeyframes && element.trajectory) {
+                                                                    update.trajectory = { ...element.trajectory, isAnimating: element.trajectory.isAnimating, startTime: Date.now() };
+                                                                }
+                                                                sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: update });
+                                                                setProcessedElements(prev => prev.map(el => el.id === element.id ? { ...el, visible: true, trajectory: update.trajectory || el.trajectory } : el));
+                                                            }}>⬆️ 上墙</button>
                                                     )}
                                                     <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#f44336', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={() => { if (element.published) { sendProjectionMessage({ type: 'REMOVE_ELEMENT', data: { id: element.id } }); } setProcessedElements(prev => prev.filter(el => el.id !== element.id)); }}>🗑️ 删除</button>
                                                 </div>

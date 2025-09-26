@@ -356,14 +356,27 @@ export default function ProjectionScreen() {
 
     // 图像预加载函数
     const loadImage = useCallback((src: string): Promise<HTMLImageElement> => {
+        // 允许使用相对路径（/files/xxx.png）或完整URL
+        let finalSrc = src;
+        if (src.startsWith('/files/')) {
+            // 优先使用后端 API 基地址（Electron preload 中注入）
+            const apiBase = (window as any).__API_BASE__ || window.location.origin;
+            try {
+                // new URL('/files/xxx', 'http://localhost:7001') => http://localhost:7001/files/xxx
+                finalSrc = new URL(src, apiBase).href;
+            } catch {
+                // 兜底拼接
+                finalSrc = apiBase.replace(/\/$/, '') + src;
+            }
+        }
         // 检查缓存
-        const cachedImage = imageCache.current.get(src);
+        const cachedImage = imageCache.current.get(finalSrc);
         if (cachedImage) {
             return Promise.resolve(cachedImage);
         }
 
         // 检查是否已有加载Promise
-        const existingPromise = imageLoadPromises.current.get(src);
+        const existingPromise = imageLoadPromises.current.get(finalSrc);
         if (existingPromise) {
             return existingPromise;
         }
@@ -373,18 +386,19 @@ export default function ProjectionScreen() {
             const img = new Image();
             img.crossOrigin = "anonymous";
             img.onload = () => {
-                imageCache.current.set(src, img);
-                imageLoadPromises.current.delete(src);
+                imageCache.current.set(finalSrc, img);
+                imageLoadPromises.current.delete(finalSrc);
                 resolve(img);
             };
             img.onerror = () => {
-                imageLoadPromises.current.delete(src);
-                reject(new Error(`Failed to load image: ${src}`));
+                imageLoadPromises.current.delete(finalSrc);
+                console.warn('[ImageLoad] failed', finalSrc);
+                reject(new Error(`Failed to load image: ${finalSrc}`));
             };
-            img.src = src;
+            img.src = finalSrc;
         });
 
-        imageLoadPromises.current.set(src, loadPromise);
+        imageLoadPromises.current.set(finalSrc, loadPromise);
         return loadPromise;
     }, []);
 
@@ -607,7 +621,13 @@ export default function ProjectionScreen() {
 
                 // 绘制元素图像
                 if (element.image) {
-                    const cachedImage = imageCache.current.get(element.image);
+                    // 与 loadImage 使用的 finalSrc 逻辑对齐（使用 __API_BASE__ 而非当前窗口 origin）
+                    let lookupKey = element.image;
+                    if (lookupKey.startsWith('/files/')) {
+                        const apiBase = (window as any).__API_BASE__ || window.location.origin;
+                        try { lookupKey = new URL(lookupKey, apiBase).href; } catch { lookupKey = apiBase.replace(/\/$/, '') + lookupKey; }
+                    }
+                    const cachedImage = imageCache.current.get(lookupKey);
                     if (cachedImage) {
                         const imgWidth = cachedImage.naturalWidth;
                         const imgHeight = cachedImage.naturalHeight;
@@ -630,7 +650,7 @@ export default function ProjectionScreen() {
                         ctx.fillText(element.name.slice(0, 8), 0, 16);
 
                         // 异步加载图像
-                        loadImage(element.image).catch(console.warn);
+                        loadImage(element.image).catch(err => console.warn('[RenderLoop] image load error', element.image, err));
                     }
                 } else {
                     // 没有图像时绘制默认占位符

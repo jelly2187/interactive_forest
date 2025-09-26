@@ -82,12 +82,15 @@ def save_rgba_soft(image_bgr: np.ndarray, alpha: np.ndarray, out_path: str):
 
 def make_output_path(image_path: str, output_dir: str, roi_idx: int) -> str:
     """
-    输入原图路径和 ROI 序号，返回形如：
-    output/seg_<stem>_roi_<idx>.png
-    例如：drawing_0030.png -> output/seg_drawing_0030_roi_1.png
+    输出命名增加时间+短随机后缀，防止同一原图多次分割不同 ROI 覆盖：
+    seg_<stem>_roi_<idx>_<yyyymmddHHMMSS>_<rand>.png
+    保持原有前缀兼容已有逻辑（前端扫描 seg_*.png 依旧可识别）。
     """
-    stem = Path(image_path).stem            # e.g. "drawing_0030"
+    import time, random
+    stem = Path(image_path).stem
     outdir = Path(output_dir)
     outdir.mkdir(parents=True, exist_ok=True)
-    name = f"seg_{stem}_roi_{roi_idx:02d}.png"  # 如需补零可用 {roi_idx:02d}
+    ts = time.strftime('%Y%m%d%H%M%S')
+    rand = format(random.randint(0, 0xFFFF), '04x')
+    name = f"seg_{stem}_roi_{roi_idx:02d}_{ts}_{rand}.png"
     return str(outdir / name)
