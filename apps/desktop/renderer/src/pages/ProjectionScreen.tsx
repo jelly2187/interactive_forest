@@ -64,6 +64,11 @@ export default function ProjectionScreen() {
     const manualPlayOverride = useRef<Set<string>>(new Set());
     // 手动一次性播放的独立音频实例，避免与期望状态引擎相互干扰
     const manualAudioMap = useRef<Map<string, HTMLAudioElement>>(new Map());
+    // 防止“开始运动”短时间内被重复判定而触发二次自动播放
+    const autoPlayGuardUntil = useRef<Map<string, number>>(new Map());
+    // 调试开关：若需要关闭日志设为 false
+    const AUDIO_DEBUG = true;
+    const dlog = (...args: any[]) => { if (AUDIO_DEBUG) console.log('[AUDIO]', ...args); };
 
     // 图像缓存
     const imageCache = useRef<Map<string, HTMLImageElement>>(new Map());
@@ -116,12 +121,16 @@ export default function ProjectionScreen() {
                         }
                     } catch { }
                 };
-                audioEl!.addEventListener('play', () => { (audioEl as any).__endedSent = false; (audioEl as any).__pendingPlay = true; sendInitial(); });
-                audioEl!.addEventListener('playing', () => { (audioEl as any).__pendingPlay = false; });
+                audioEl!.addEventListener('play', () => { (audioEl as any).__endedSent = false; (audioEl as any).__pendingPlay = true; dlog(element.id, 'event:play'); sendInitial(); });
+                audioEl!.addEventListener('playing', () => { (audioEl as any).__pendingPlay = false; dlog(element.id, 'event:playing'); });
                 const sendProgress = () => {
                     const dur = isFinite(audioEl!.duration) && audioEl!.duration > 0 ? audioEl!.duration : 0;
                     const cur = audioEl!.currentTime || 0;
                     const progress = dur > 0 ? Math.min(1, Math.max(0, cur / dur)) : 0;
+                    if ((audioEl as any).__lastLoggedProgress === undefined || Math.abs(progress - (audioEl as any).__lastLoggedProgress) >= 0.3) {
+                        (audioEl as any).__lastLoggedProgress = progress;
+                        dlog(element.id, 'progress', progress.toFixed(2));
+                    }
                     try {
                         if ((window as any).electronAPI?.sendToMain) {
                             (window as any).electronAPI.sendToMain({ type: 'AUDIO_PROGRESS', data: { id: element.id, currentTime: cur, duration: dur, progress } });
@@ -139,6 +148,7 @@ export default function ProjectionScreen() {
                 };
                 audioEl!.addEventListener('timeupdate', sendProgress);
                 audioEl!.addEventListener('ended', () => {
+                    dlog(element.id, 'event:ended');
                     (audioEl as any).__endedSent = true;
                     manualPlayOverride.current.delete(element.id);
                     try {
@@ -166,7 +176,10 @@ export default function ProjectionScreen() {
             audioEl.loop = desired.loop;
             audioEl.volume = desired.volume;
             const nowPlaying = !audioEl.paused && !audioEl.ended && audioEl.currentTime > 0;
+            const pendingPlay = !!(audioEl as any).__pendingPlay; // 新增：播放尚未进入 playing 事件
             if (desired.isPlaying && !nowPlaying) {
+                // 如果已经有一次 play() 调用在 pending，直接跳过，避免重置 currentTime 造成“第二次播放”现象
+                if (pendingPlay) return;
                 try {
                     const dur = isFinite(audioEl.duration) && audioEl.duration > 0 ? audioEl.duration : 0;
                     if (audioEl.ended || (dur > 0 && audioEl.currentTime >= dur - 0.02)) {
@@ -177,10 +190,12 @@ export default function ProjectionScreen() {
                 // 设置短暂锁，避免后续 update 立刻 pause
                 playLockUntil.current.set(element.id, Date.now() + 800);
                 (audioEl as any).__pendingPlay = true;
+                dlog(element.id, 'play(reuse-desired)');
                 audioEl.play().catch(err => {
                     (audioEl as any).__pendingPlay = false;
                     console.warn('音频播放失败:', err);
                     try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_ERROR', data: { id: element.id, message: String(err) } }); } } catch { }
+                    dlog(element.id, 'play error', err);
                 });
             } else if (!desired.isPlaying && nowPlaying) {
                 const lock = playLockUntil.current.get(element.id) || 0;
@@ -188,7 +203,7 @@ export default function ProjectionScreen() {
                 if (Date.now() < lock || pending || manualPlayOverride.current.has(element.id)) {
                     // 忽略短时间内的反向暂停请求
                 } else {
-                    try { audioEl.pause(); } catch { }
+                    try { audioEl.pause(); dlog(element.id, 'pause(reuse-desired)'); } catch { }
                 }
             }
             return;
@@ -207,7 +222,9 @@ export default function ProjectionScreen() {
         const applyPlayState = () => {
             // 只在状态变化时操作，避免 play 后立刻 pause 的竞态
             const nowPlaying = !audioEl.paused && !audioEl.ended && audioEl.currentTime > 0;
+            const pendingPlay = !!(audioEl as any).__pendingPlay;
             if (desired.isPlaying && !nowPlaying) {
+                if (pendingPlay) return; // 避免在第一条 play() 尚未真正开始前重复触发
                 try {
                     const dur = isFinite(audioEl.duration) && audioEl.duration > 0 ? audioEl.duration : 0;
                     if (audioEl.ended || (dur > 0 && audioEl.currentTime >= dur - 0.02)) {
@@ -217,10 +234,12 @@ export default function ProjectionScreen() {
                 } catch { }
                 playLockUntil.current.set(element.id, Date.now() + 800);
                 (audioEl as any).__pendingPlay = true;
+                dlog(element.id, 'play(applyState)');
                 audioEl.play().catch(err => {
                     (audioEl as any).__pendingPlay = false;
                     console.warn('音频播放失败:', err);
                     try { if ((window as any).electronAPI?.sendToMain) { (window as any).electronAPI.sendToMain({ type: 'AUDIO_ERROR', data: { id: element.id, message: String(err) } }); } } catch { }
+                    dlog(element.id, 'play error', err);
                 });
             } else if (!desired.isPlaying && nowPlaying) {
                 const lock = playLockUntil.current.get(element.id) || 0;
@@ -228,17 +247,49 @@ export default function ProjectionScreen() {
                 if (Date.now() < lock || pending || manualPlayOverride.current.has(element.id)) {
                     // 忽略短时间内的反向暂停请求
                 } else {
-                    try { audioEl.pause(); } catch { }
+                    try { audioEl.pause(); dlog(element.id, 'pause(applyState)'); } catch { }
                 }
             }
         };
 
         if (changeSrc) {
+            if (!desired.isPlaying) {
+                // 仅更换资源且不要求立即播放：避免注册 canplay 与超时回调，等后续需要播放时再处理
+                return;
+            }
             // 等待资源可播放后再根据期望状态播放，避免 "play() request was interrupted by pause()"
-            const onCanPlay = () => { audioEl.removeEventListener('canplay', onCanPlay); try { if (desired.isPlaying) { (audioEl as any).__endedSent = false; audioEl.currentTime = 0; playLockUntil.current.set(element.id, Date.now() + 800); } } catch { } applyPlayState(); };
+            const onCanPlay = () => {
+                audioEl.removeEventListener('canplay', onCanPlay);
+                // 成功 canplay 后清理兜底超时，避免 1.5s 后再次触发重复播放
+                try {
+                    const tid = (audioEl as any).__canplayTimeout;
+                    if (tid) { clearTimeout(tid); (audioEl as any).__canplayTimeout = null; }
+                } catch { }
+                dlog(element.id, 'canplay');
+                try {
+                    if (desired.isPlaying) {
+                        (audioEl as any).__endedSent = false;
+                        audioEl.currentTime = 0;
+                        playLockUntil.current.set(element.id, Date.now() + 800);
+                    }
+                } catch { }
+                applyPlayState();
+            };
             audioEl.addEventListener('canplay', onCanPlay);
-            // 也设置一个兜底超时
-            setTimeout(() => { try { audioEl.removeEventListener('canplay', onCanPlay); } catch { } if (desired.isPlaying) { (audioEl as any).__endedSent = false; try { audioEl.currentTime = 0; } catch { } playLockUntil.current.set(element.id, Date.now() + 800); } applyPlayState(); }, 1500);
+            // 也设置一个兜底超时（若 1.5s 内没有收到 canplay）
+            (audioEl as any).__canplayTimeout = window.setTimeout(() => {
+                // 如果已经开始播放则跳过，防止重复 play
+                const nowPlaying = !audioEl.paused && !audioEl.ended && audioEl.currentTime > 0;
+                if (nowPlaying) { dlog(element.id, 'canplay timeout skipped (already playing)'); return; }
+                try { audioEl.removeEventListener('canplay', onCanPlay); } catch { }
+                if (desired.isPlaying) {
+                    (audioEl as any).__endedSent = false;
+                    try { audioEl.currentTime = 0; } catch { }
+                    playLockUntil.current.set(element.id, Date.now() + 800);
+                    dlog(element.id, 'canplay timeout');
+                }
+                applyPlayState();
+            }, 1500);
         } else {
             applyPlayState();
         }
@@ -433,10 +484,31 @@ export default function ProjectionScreen() {
                     if (element.audio?.src) {
                         const lastStamp = motionStartPlayed.current.get(element.id);
                         if (lastStamp !== traj.startTime) {
-                            motionStartPlayed.current.set(element.id, traj.startTime);
-                            // 触发一次单次播放（统一走 updateElementAudio 以确保绑定进度/结束事件）
-                            const tempEl: Element = { ...element, audio: { ...element.audio, isPlaying: true, loop: false } } as Element;
-                            try { updateElementAudio(tempEl); } catch { }
+                            // 先做时间去抖，避免短时间内重复开播
+                            const guard = autoPlayGuardUntil.current.get(element.id) || 0;
+                            if (now >= guard) {
+                                // 若已有同 id 的音频正在播放，则不再触发自动播放
+                                const existingAudio = audioMap.current.get(element.id);
+                                if (existingAudio) {
+                                    const alreadyPlaying = !existingAudio.paused && !existingAudio.ended && existingAudio.currentTime > 0;
+                                    const pendingFirstPlay = !!(existingAudio as any).__pendingPlay && existingAudio.currentTime === 0;
+                                    if (pendingFirstPlay) {
+                                        // 正在等待第一次播放稳定，直接记录 startTime 防止重复
+                                        motionStartPlayed.current.set(element.id, traj.startTime);
+                                        return;
+                                    }
+                                    if (alreadyPlaying) {
+                                        motionStartPlayed.current.set(element.id, traj.startTime);
+                                        return;
+                                    }
+                                }
+                                autoPlayGuardUntil.current.set(element.id, now + 800);
+                                motionStartPlayed.current.set(element.id, traj.startTime);
+                                // 触发一次单次播放（统一走 updateElementAudio 以确保绑定进度/结束事件）
+                                const tempEl: Element = { ...element, audio: { ...element.audio, isPlaying: true, loop: false } } as Element;
+                                dlog(element.id, 'auto-play trigger');
+                                try { updateElementAudio(tempEl); } catch { dlog(element.id, 'auto-play trigger error'); }
+                            }
                         }
                     }
 
@@ -771,18 +843,8 @@ export default function ProjectionScreen() {
                     }));
                     try {
                         const el = data as Element;
-                        // 同步音频静态属性
+                        // 同步音频静态属性（不在此处触发播放，统一由渲染循环在“开始运动”时触发一次）
                         updateElementAudio(el as any);
-                        // 若上墙即开始运动，且配置了音频，则立即触发一次单次播放（统一通过 updateElementAudio）
-                        if (el.trajectory?.isAnimating && el.audio?.src) {
-                            const stamp = el.trajectory.startTime || Date.now();
-                            const lastStamp = motionStartPlayed.current.get(el.id);
-                            if (lastStamp !== stamp) {
-                                motionStartPlayed.current.set(el.id, stamp);
-                                const tempEl: Element = { ...el, audio: { ...el.audio, isPlaying: true, loop: false } } as Element;
-                                updateElementAudio(tempEl);
-                            }
-                        }
                     } catch { }
                     break;
 
