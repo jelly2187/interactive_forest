@@ -9,7 +9,8 @@ from ..schemas import (
     InitRequest, InitResponse,
     SegmentRequest, SegmentResponse, MaskInfo,
     ExportROIRequest, ExportROIResponse,
-    BrushRefinementRequest, BrushRefinementResponse
+    BrushRefinementRequest, BrushRefinementResponse,
+    UpdateImageRequest, UpdateImageResponse
 )
 from ..services.sam_engine import SamEngine
 from ..services.splitter import export_single
@@ -31,10 +32,30 @@ def list_sessions():
 @router.post("/init", response_model=InitResponse)
 def init(req: InitRequest):
     try:
-        sess = engine.init_session(req.image_path, req.image_b64, req.image_name)
+        # 如果不保留旧会话，先整体清空，确保新图片不复用旧 predictor 与掩码
+        if not req.keep_session:
+            engine.clear_all_sessions()
+        sess = engine.init_session(req.image_path, req.image_b64, req.image_name, req.max_side)
         return InitResponse(session_id=sess.id, width=sess.w, height=sess.h, image_name=sess.image_name)
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+@router.post('/update-image', response_model=UpdateImageResponse)
+def update_image(req: UpdateImageRequest):
+    if not req.session_id:
+        raise HTTPException(status_code=400, detail='session_id required')
+    if not (req.image_path or req.image_b64):
+        raise HTTPException(status_code=400, detail='image_path 或 image_b64 至少一个')
+    try:
+        if req.image_path:
+            sess = engine.update_session_image(req.session_id, req.image_path)
+        else:
+            sess = engine.update_session_image_b64(req.session_id, req.image_b64, req.max_side)
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail='image file not found')
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return UpdateImageResponse(session_id=sess.id, width=sess.w, height=sess.h, image_name=sess.image_name)
 
 # ---- 2) 针对单个ROI请求候选掩码 ----
 @router.post("/segment", response_model=SegmentResponse)

@@ -6,7 +6,7 @@ Interactive Forest 是一个结合AI图像分割和互动可视化的创新项�
 
 ### 技术栈架构
 
-```
+```text
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   Frontend      │    │   Backend       │    │   AI Models     │
 │                 │    │                 │    │                 │
@@ -16,7 +16,7 @@ Interactive Forest 是一个结合AI图像分割和互动可视化的创新项�
 │ PIXI.js         │    │ Pydantic        │    │ Pillow          │
 │ Vite            │    │ CORS Middleware │    │                 │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
-```
+```text
 
 ## 🎯 核心功能模块
 
@@ -41,16 +41,19 @@ Interactive Forest 是一个结合AI图像分割和互动可视化的创新项�
   - ROI提取和导出
   - 透明背景PNG生成
 
-**API架构**:
+**API架构（统一 /sam 模型）**:
 
-```python
-# 主要端点
-GET  /health                              # 健康检查
-POST /upload-file                         # 文件上传
-POST /sessions/{session_id}/encode        # SAM编码
-POST /sessions/{session_id}/segment-*     # 多种分割方式
-GET  /sessions/{session_id}/export-roi/*  # 结果导出
-```
+```text
+GET  /health                        # 健康检查
+POST /sam/init                      # 初始化并完成编码 (image_path | image_b64)
+GET  /sam/sessions                  # (调试) 当前活动 session 列表
+POST /sam/segment                   # 生成候选掩码 (points + labels + box + top_n)
+POST /sam/brush-refinement          # 画笔增删迭代精修掩码
+GET  /sam/mask/{session_id}/{mask}  # 获取掩码 PNG
+POST /sam/export-roi                # 导出透明 PNG (feather/roi_box/roi_index)
+GET  /assets/list                   # 列出导出精灵 (seg_*.png)
+DELETE /assets/delete               # 删除指定精灵文件
+```text
 
 ### 2. 桌面应用 (Frontend)
 
@@ -58,7 +61,7 @@ GET  /sessions/{session_id}/export-roi/*  # 结果导出
 
 **架构层次**:
 
-```
+```text
 Electron主进程 (main.js)
 ├── 窗口管理和生命周期
 ├── 文件系统访问
@@ -89,53 +92,82 @@ React渲染进程 (renderer/)
 
 ## 🔄 数据流架构
 
-### 1. 分割处理流程
+### 1. 分割处理流程（序列图）
 
 ```mermaid
 sequenceDiagram
     participant U as 用户
-    participant F as Frontend
-    participant B as Backend
-    participant S as SAM引擎
+    participant FE as Frontend
+    participant BE as Backend
+    participant SAM as SAM引擎
 
-    U->>F: 上传图片
-    F->>B: POST /upload-file
-    B-->>F: session_id
-    
-    F->>B: POST /sessions/{id}/encode
-    B->>S: 加载图片到SAM
-    S-->>B: 编码特征
-    B-->>F: 编码完成
-    
-    U->>F: 框选区域
-    F->>B: POST /sessions/{id}/segment-box
-    B->>S: 执行分割
-    S-->>B: 返回掩码候选
-    B-->>F: 掩码列表
-    
-    U->>F: 选择掩码
-    F->>B: GET /sessions/{id}/export-roi/{mask_id}
-    B-->>F: 透明PNG
+    U->>FE: 上传/拍照 获取图像
+    FE->>BE: POST /sam/init (image_b64 或 path)
+    BE-->>FE: session_id / 尺寸
+    FE->>BE: POST /sam/segment (points+box)
+    BE->>SAM: 生成候选掩码
+    SAM-->>BE: masks
+    BE-->>FE: top_n 掩码信息
+    U->>FE: 画笔增删
+    FE->>BE: POST /sam/brush-refinement
+    BE-->>FE: refined_mask_id
+    U->>FE: 导出
+    FE->>BE: POST /sam/export-roi
+    BE-->>FE: sprite_path (唯一命名)
 ```
 
-### 2. 森林渲染流程
+### 2. 森林渲染流程（流程图）
 
 ```mermaid
 flowchart TD
-    A[加载视频背景] --> B[初始化PIXI舞台]
-    B --> C[创建元素精灵]
-    C --> D[设置动画系统]
-    D --> E[绑定交互事件]
-    E --> F[开始渲染循环]
-    
-    F --> G{用户交互?}
-    G -->|拖拽| H[更新位置]
-    G -->|点击| I[播放音效]
-    G -->|无| J[继续动画]
-    
-    H --> F
-    I --> F
-    J --> F
+    A[启动 /files 扫描恢复] --> B[元素列表创建]
+    B --> C{可见?}
+    C -->|是| D[创建/复用精灵]
+    C -->|否| E[跳过渲染]
+    D --> F[应用动画更新]
+    F --> G[音效状态同步]
+    G --> H[帧循环]
+    E --> H
+```
+
+### 3. 动画更新示例
+
+```typescript
+type AnimationType = 'sway' | 'fly' | 'move' | 'idle'
+function updateAnimation(e: ElementItem, t: number) {
+  switch (e.animation.type) {
+    case 'sway': // 正弦横移+轻旋转
+      break
+    case 'fly':  // 波浪 y 偏移 + x 前进
+      break
+    case 'move': // 关键帧插值 pos/scale/rot/alpha
+      break
+    default:
+      break
+  }
+}
+```text
+
+### 4. 关键状态片段
+
+```typescript
+interface SegSession {
+  sessionId?: string
+  rois: RoiBox[]
+  activeRoi?: number
+  points: {x:number;y:number;label:0|1}[]
+  candidates: MaskCandidate[]
+  refinedMaskId?: string
+}
+
+interface ElementItem {
+  id: string
+  file: string // seg_*.png
+  url: string  // /files/seg_*.png
+  visible: boolean
+  animation: AnimationConfig
+  sound?: SoundConfig
+}
 ```
 
 ## 📂 文件组织结构

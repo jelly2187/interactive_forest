@@ -1,5 +1,13 @@
 const { app, BrowserWindow, screen, ipcMain } = require("electron");
 const path = require("path");
+const fs = require("fs");
+
+// 允许视频/音频自动播放（含声音）——修复背景视频自带音乐不出声问题
+try {
+  app.commandLine.appendSwitch('autoplay-policy', 'no-user-gesture-required');
+} catch (e) {
+  console.warn('设置 autoplay-policy 失败(可忽略):', e.message);
+}
 
 let mainWindow = null;
 let projectionWindow = null;
@@ -28,6 +36,30 @@ ipcMain.on('request-background', () => {
 ipcMain.on('reply-background', (event, dataUrl) => {
   if (mainWindow) {
     mainWindow.webContents.send('background-snapshot', dataUrl);
+  }
+});
+
+// 保存摄像头图片到本地并返回路径（供后端 image_path 使用）
+ipcMain.handle('save-camera-image', async (_event, { dataUrl, name }) => {
+  try {
+    if (!dataUrl || !dataUrl.startsWith('data:image')) throw new Error('invalid dataUrl');
+    const ext = dataUrl.includes('image/png') ? '.png' : '.jpg';
+    const base64 = dataUrl.split(',')[1];
+    const buf = Buffer.from(base64, 'base64');
+    // 保存到项目内 apps/camera/photos 目录（若不存在则创建）
+    const dir = path.join(__dirname, '..', '..', 'camera', 'photos');
+    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+    const now = new Date();
+    const pad = (n) => String(n).padStart(2, '0');
+    const timeSuffix = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+    // 若传入 name 已含扩展或时间戳，这里仍统一追加格式化时间，保证可读与唯一
+    const base = (name || 'camera');
+    const fileName = `${base}_${timeSuffix}${ext}`;
+    const filePath = path.join(dir, fileName);
+    fs.writeFileSync(filePath, buf);
+    return { success: true, path: filePath };
+  } catch (e) {
+    return { success: false, error: e.message };
   }
 });
 
@@ -96,12 +128,12 @@ function createProjectionWindow() {
   // 如果有多个显示器，在第二个显示器上创建投影窗口
   let targetDisplay = displays[0]; // 默认主显示器
   // TODO: 正式使用的时候切换为大屏
-  // if (displays.length > 1) {
-  //   targetDisplay = displays[1]; // 使用第二个显示器
-  //   console.log('Using secondary display for projection window');
-  // } else {
-  //   console.log('Only one display available, creating projection window on main display');
-  // }
+  if (displays.length > 1) {
+    targetDisplay = displays[1]; // 使用第二个显示器
+    console.log('Using secondary display for projection window');
+  } else {
+    console.log('Only one display available, creating projection window on main display');
+  }
 
   projectionWindow = new BrowserWindow({
     x: targetDisplay.bounds.x,

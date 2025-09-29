@@ -13,3 +13,4 @@ tsconfig.tsbuildinfo
 *.env
 *.log
 *.pptx
+*.jpg

@@ -91,6 +91,69 @@ export default function ProjectionScreen() {
     const forestStateRef = useRef(forestState);
     useEffect(() => { forestStateRef.current = forestState; }, [forestState]);
 
+    // 参数显示框开关（默认关闭，避免演示环境干扰）
+    const [showStats, setShowStats] = useState<boolean>(false);
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            // F7 切换显示；亦支持 `S` + Ctrl 组合备用
+            if (e.key === 'F7' || (e.key.toLowerCase() === 's' && e.ctrlKey)) {
+                setShowStats(prev => !prev);
+            }
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, []);
+
+    // 解除视频静音并尝试播放音频
+    useEffect(() => {
+        const v = videoRef.current;
+        if (!v) return;
+        const tryPlay = () => {
+            try {
+                v.muted = false;
+                const p = v.play();
+                if (p && typeof p.then === 'function') {
+                    p.catch(err => {
+                        console.warn('[Projection] 自动播放受限，等待首次用户交互解锁音频:', err?.message || err);
+                        const once = () => {
+                            try { v.muted = false; v.play().catch(()=>{}); } catch {}
+                            window.removeEventListener('click', once);
+                            window.removeEventListener('keydown', once);
+                        };
+                        window.addEventListener('click', once, { once: true });
+                        window.addEventListener('keydown', once, { once: true });
+                    });
+                }
+            } catch (e) {
+                console.warn('[Projection] 播放背景视频失败:', e);
+            }
+        };
+        // 如果已经可以播放就直接尝试，否则等 canplay 事件
+        if (v.readyState >= 2) {
+            tryPlay();
+        } else {
+            const onCanPlay = () => { tryPlay(); };
+            v.addEventListener('canplay', onCanPlay, { once: true });
+            return () => v.removeEventListener('canplay', onCanPlay);
+        }
+    }, [forestState.backgroundVideo]);
+
+    // 允许主窗口通过 IPC 控制（可在 ControlPanel 发送 {type:'TOGGLE_STATS', value?:boolean}）
+    useEffect(() => {
+        const api = (window as any).electronAPI;
+        if (!api?.onFromMain) return;
+        const listener = (_: any, message: any) => {
+            try {
+                const msg = message || _; // 兼容不同 preload 封装
+                if (msg?.type === 'TOGGLE_STATS') {
+                    if (typeof msg.value === 'boolean') setShowStats(msg.value); else setShowStats(prev => !prev);
+                }
+            } catch { }
+        };
+        api.onFromMain(listener);
+        return () => { try { api.removeFromMain?.(listener); } catch { } };
+    }, []);
+
     // 音频控制
     const updateElementAudio = useCallback((element: Element) => {
         const audioCfg = element.audio;
@@ -1182,7 +1245,6 @@ export default function ProjectionScreen() {
                 src={forestState.backgroundVideo}
                 autoPlay
                 loop
-                muted
                 playsInline
                 onLoadedData={handleVideoLoaded}
                 onError={handleVideoError}
@@ -1212,8 +1274,8 @@ export default function ProjectionScreen() {
                 }}
             />
 
-            {/* 性能监控（开发模式） */}
-            {process.env.NODE_ENV === 'development' && (
+            {/* 参数 / 性能监控显示框：可通过按键或外部消息切换 */}
+            {showStats && (
                 <div style={{
                     position: "fixed",
                     top: "10px",

@@ -9,9 +9,24 @@ class InitRequest(BaseModel):
     image_path: Optional[str] = None       # 后端可读路径（二选一）
     image_b64: Optional[str] = None        # dataURL 或纯base64（二选一）
     image_name: Optional[str] = None       # 可用于命名，如 drawing_0030.png
-    keep_session: bool = True
+    keep_session: bool = False             # 默认为 False: 启动新图片时清空旧会话，避免坐标/图片错配
+    max_side: Optional[int] = Field(default=None, description="可选：限制图像最大边，后端统一缩放以加速")
 
 class InitResponse(BaseModel):
+    session_id: str
+    width: int
+    height: int
+    image_name: str
+
+# ---- 更新已存在会话的图像（摄像头连续拍照复用 predictor） ----
+class UpdateImageRequest(BaseModel):
+    session_id: str
+    image_path: Optional[str] = None
+    image_b64: Optional[str] = None
+    image_name: Optional[str] = None
+    max_side: Optional[int] = Field(default=None, description="可选：更新时限制最大边")
+
+class UpdateImageResponse(BaseModel):
     session_id: str
     width: int
     height: int

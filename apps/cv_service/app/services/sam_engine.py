@@ -1,4 +1,5 @@
 import os
+import shutil
 import base64
 import uuid
 from dataclasses import dataclass
@@ -27,7 +28,15 @@ class SamEngine:
         if not self.weights_path or not os.path.exists(self.weights_path):
             raise RuntimeError("SAM weights not found. Set SAM_WEIGHTS to a valid .pth file.")
         self.sessions: dict[str, Session] = {}
+        import time
+        t0 = time.perf_counter()
         self._model = sam_model_registry[self.model_type](checkpoint=self.weights_path).to(self.device)
+        t1 = time.perf_counter()
+        try:
+            import torch
+            print(f"[SAM][Init] model_type={self.model_type} device={self.device} cuda_available={torch.cuda.is_available()} load_time={(t1-t0)*1000:.1f}ms")
+        except Exception:
+            print(f"[SAM][Init] model_type={self.model_type} device={self.device} load_time={(t1-t0)*1000:.1f}ms (torch inspect failed)")
 
     def _decode_image(self, image_path: Optional[str], image_b64: Optional[str]) -> np.ndarray:
         if image_path:
@@ -46,8 +55,19 @@ class SamEngine:
             return img
         raise ValueError("Either image_path or image_b64 must be provided.")
 
-    def init_session(self, image_path: Optional[str], image_b64: Optional[str], image_name: Optional[str]) -> Session:
+    def init_session(self, image_path: Optional[str], image_b64: Optional[str], image_name: Optional[str], max_side: Optional[int] = None) -> Session:
+        import time
+        t0 = time.perf_counter()
         image_bgr = self._decode_image(image_path, image_b64)
+        t1 = time.perf_counter()
+        resized = False
+        if max_side and max_side > 0:
+            h0, w0 = image_bgr.shape[:2]
+            if max(h0, w0) > max_side:
+                scale = max_side / max(h0, w0)
+                image_bgr = cv2.resize(image_bgr, (int(w0*scale), int(h0*scale)), interpolation=cv2.INTER_AREA)
+                resized = True
+        t2 = time.perf_counter()
         h, w = image_bgr.shape[:2]
         sid = str(uuid.uuid4())
         # 增加时间前缀，便于溯源与调试：YYYYMMDD_HHMMSS_<session-uuid>
@@ -57,7 +77,10 @@ class SamEngine:
         tmp_dir.mkdir(parents=True, exist_ok=True)
 
         predictor = SamPredictor(self._model)
-        predictor.set_image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
+        t3 = time.perf_counter()
+        predictor.set_image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))  # 生成图像 embedding（最耗时）
+        t4 = time.perf_counter()
+        print(f"[SAM][SessionInit] sid={sid[:8]} decode={(t1-t0)*1000:.1f}ms resize={(t2-t1)*1000:.1f}ms new_predictor={(t3-t2)*1000:.1f}ms embed={(t4-t3)*1000:.1f}ms total={(t4-t0)*1000:.1f}ms resized={resized} shape={w}x{h}")
 
         # 命名：优先用 image_name，否则用路径stem，最后 fallback 为 session_xxx
         if image_name:
@@ -71,10 +94,96 @@ class SamEngine:
         self.sessions[sid] = sess
         return sess
 
+    def update_session_image(self, session_id: str, image_path: str) -> Session:
+        """更新一个已有会话的底图而不销毁 predictor，提高摄像头连续拍摄速度。
+        会清理该会话 tmp_dir 下旧的临时 mask（保留最终导出的不在此目录的结果）。
+        """
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError("Session not found")
+        if not Path(image_path).exists():
+            raise FileNotFoundError(image_path)
+
+        import cv2
+        image_bgr = cv2.imread(image_path)
+        if image_bgr is None:
+            raise ValueError("Failed to read image for update")
+        # 可选：若分辨率过大，限制最大边，减少后续推理耗时
+        max_side = 1280
+        h0, w0 = image_bgr.shape[:2]
+        if max(h0, w0) > max_side:
+            scale = max_side / max(h0, w0)
+            image_bgr = cv2.resize(image_bgr, (int(w0*scale), int(h0*scale)), interpolation=cv2.INTER_AREA)
+
+        session.image_bgr = image_bgr
+        session.h, session.w = image_bgr.shape[:2]
+        session.image_name = Path(image_path).name
+        # 重新设置 predictor 图像（无需重新实例化 predictor）
+        session.predictor.set_image(cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB))
+
+        # 清空旧的临时 mask 文件，避免混淆
+        for f in session.tmp_dir.glob("*.png"):
+            try:
+                f.unlink()
+            except Exception:
+                pass
+        # 不重建 predictor，只是更新 image 引用
+        return session
+
+    def update_session_image_b64(self, session_id: str, image_b64: str, max_side: Optional[int] = None) -> Session:
+        """复用已有 predictor，使用 base64 图像更新。"""
+        session = self.sessions.get(session_id)
+        if not session:
+            raise ValueError("Session not found")
+        import time
+        t0 = time.perf_counter()
+        img = self._decode_image(None, image_b64)
+        t1 = time.perf_counter()
+        resized = False
+        if max_side and max_side > 0:
+            h0, w0 = img.shape[:2]
+            if max(h0, w0) > max_side:
+                scale = max_side / max(h0, w0)
+                img = cv2.resize(img, (int(w0*scale), int(h0*scale)), interpolation=cv2.INTER_AREA)
+                resized = True
+        t2 = time.perf_counter()
+        session.image_bgr = img
+        session.h, session.w = img.shape[:2]
+        # 复用 predictor：重新 set_image
+        session.predictor.set_image(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
+        t3 = time.perf_counter()
+        # 清除旧临时掩码
+        for f in session.tmp_dir.glob("*.png"):
+            try:
+                f.unlink()
+            except Exception:
+                pass
+        print(f"[SAM][UpdateImage] sid={session_id[:8]} decode={(t1-t0)*1000:.1f}ms resize={(t2-t1)*1000:.1f}ms embed={(t3-t2)*1000:.1f}ms total={(t3-t0)*1000:.1f}ms resized={resized} shape={session.w}x{session.h}")
+        return session
+
+    def clear_all_sessions(self):
+        """清理所有已存在的会话及其临时目录，防止残留掩码导致坐标错配或磁盘膨胀。"""
+        for sess in list(self.sessions.values()):
+            try:
+                if sess.tmp_dir.exists():
+                    shutil.rmtree(sess.tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
+        self.sessions.clear()
+
     def segment(self, session_id: str, points, labels, box, multimask: bool, top_n: int, smooth: bool):
         sess = self.sessions.get(session_id)
         if not sess:
             raise ValueError(f"Session not found: {session_id}")
+
+        # 清理旧的候选掩码文件（仅删除纯 32 位 hex 命名的初始候选，保留 *_refined_*）
+        try:
+            for p in sess.tmp_dir.glob('*.png'):
+                stem = p.stem
+                if len(stem) == 32 and '_' not in stem:  # uuid4().hex 长度 32
+                    p.unlink(missing_ok=True)
+        except Exception:
+            pass
 
         pc = np.array(points, dtype=np.float32) if points else None
         pl = np.array(labels, dtype=np.int32) if labels else None

@@ -1,6 +1,6 @@
 # Postman API 测试指南 📋
 
-本指南详细说明如何使用Postman测试Interactive Forest项目的后端API。
+本指南说明如何使用 Postman 测试统一的 /sam*图像分割接口与 /assets 管理接口；已完全替换旧版 /upload-file 与 /sessions/* 端点。
 
 ## 🚀 准备工作
 
@@ -15,496 +15,266 @@ python -m uvicorn app.main:app --reload --port 7001
 
 ### 2. 验证服务运行
 
-访问 <http://localhost:7001/docs> 查看API文档
+访问: <http://localhost:7001/docs> (交互式 OpenAPI 文档)
 
-### 3. 导入Postman集合
+### 3. Postman 基础设置
 
-创建新的Postman集合，配置以下基础设置：
+## 📋 核心接口概览
 
-- **Base URL**: `http://localhost:7001`
-- **Content-Type**: `application/json`
+| 功能 | 方法 | 路径 | 关键字段 | 说明 |
+|------|------|------|----------|------|
+| 健康检查 | GET | /health | - | 服务状态 |
+| 初始化会话 | POST | /sam/init | image_path 或 image_b64 | 创建并缓存编码 |
+| 列出会话(调试) | GET | /sam/sessions | - | 非生产用途 |
+| 生成候选掩码 | POST | /sam/segment | points, labels, box, top_n | 返回多个掩码 ID |
+| 画笔润色 | POST | /sam/brush-refinement | mask_id, strokes, roi_box | 迭代精修生成新 mask_id |
+| 获取掩码 PNG | GET | /sam/mask/{session_id}/{mask_id} | - | 黑白蒙版图 |
+| 导出 ROI | POST | /sam/export-roi | mask_id/refined_id, roi_box, feather_px, roi_index | 生成透明 PNG 资源 |
+| 资产列出 | GET | /assets/list | pattern(可选) | 默认匹配 seg_*.png |
+| 资产删除 | DELETE | /assets/delete | name | 安全删除 output 下文件 |
 
-## 📋 API端点测试
+## 🔍 详细接口测试
 
-### 1. 健康检查接口
+### 1. 健康检查 /health
 
-**GET** `/health`
+示例请求（Raw）：
 
-**用途**: 验证服务状态
-
-**请求示例**:
-
+```http
+GET /health HTTP/1.1
+Host: localhost:7001
 ```
-GET http://localhost:7001/health
+
+期望响应：
+
+```json
+{ "status": "healthy", "timestamp": "2024-xx-xxT.." }
 ```
 
-**预期响应**:
+验证：状态码 200 且 status=healthy。
+
+### 2. 初始化会话 /sam/init
+
+方式 A（服务器已有测试图）：
+
+```json
+{ "image_path": "assets/datasets/test/drawing_0006.png", "image_name": "drawing_0006.png" }
+```
+
+方式 B（摄像头拍照 base64，示例截断）：
+
+```json
+{ "image_b64": "data:image/png;base64,iVBORw0KGgo...", "image_name": "capture.png" }
+```
+
+响应示例：
 
 ```json
 {
-  "status": "healthy",
-  "timestamp": "2024-01-XX XX:XX:XX"
+  "session_id": "c9c9c3ac-...",
+  "width": 1024,
+  "height": 768,
+  "image_name": "drawing_0006.png"
 }
 ```
 
-**测试验证**:
+错误示例：缺失 image_path 和 image_b64 → 400。
 
-- ✅ 状态码: 200
-- ✅ 响应包含 `status: "healthy"`
+### 3. 列出活动会话 /sam/sessions (调试)
 
----
+```http
+GET /sam/sessions HTTP/1.1
+Host: localhost:7001
+```
 
-### 2. 文件上传接口
+用于观察是否重复创建 session；生产环境可关闭。
 
-**POST** `/upload-file`
+### 4. 生成候选掩码 /sam/segment
 
-**用途**: 上传图片文件并获取会话ID
-
-**请求配置**:
-
-- 方法: POST
-- Body类型: form-data
-- 字段: `file` (选择图片文件)
-
-**测试步骤**:
-
-1. 在Body选项卡选择 `form-data`
-2. 添加key: `file`, type: `File`
-3. 选择测试图片 (建议使用 `assets/datasets/test/drawing_0006.png`)
-
-**预期响应**:
+请求示例（点 + 框 + 多掩码）：
 
 ```json
 {
-  "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "message": "文件上传成功",
-  "filename": "drawing_0006.png"
+  "session_id": "<session_uuid>",
+  "points": [[150,180],[200,210]],
+  "labels": [1,1],
+  "box": [120,150,360,420],
+  "multimask": true,
+  "top_n": 3,
+  "smooth": true
 }
 ```
 
-**测试验证**:
-
-- ✅ 状态码: 200
-- ✅ 返回有效的session_id (UUID格式)
-- ✅ 文件保存到临时目录
-
----
-
-### 3. 获取原始图片
-
-**GET** `/sessions/{session_id}/original`
-
-**用途**: 获取上传的原始图片
-
-**路径参数**:
-
-- `session_id`: 从上传接口获得的会话ID
-
-**请求示例**:
-
-```
-GET http://localhost:7001/sessions/550e8400-e29b-41d4-a716-446655440000/original
-```
-
-**预期响应**:
-
-- Content-Type: `image/png`
-- 图片二进制数据
-
-**测试验证**:
-
-- ✅ 状态码: 200
-- ✅ 响应类型为图片
-- ✅ 能正常显示图片内容
-
----
-
-### 4. SAM编码器处理
-
-**POST** `/sessions/{session_id}/encode`
-
-**用途**: 使用SAM编码器处理图片
-
-**路径参数**:
-
-- `session_id`: 会话ID
-
-**请求体**: 空 (无需body)
-
-**请求示例**:
-
-```
-POST http://localhost:7001/sessions/550e8400-e29b-41d4-a716-446655440000/encode
-```
-
-**预期响应**:
-
-```json
-{
-  "message": "编码完成",
-  "session_id": "550e8400-e29b-41d4-a716-446655440000",
-  "encoding_time": 2.45
-}
-```
-
-**测试验证**:
-
-- ✅ 状态码: 200
-- ✅ 编码时间 < 10秒
-- ✅ 返回相同的session_id
-
----
-
-### 5. 框选分割
-
-**POST** `/sessions/{session_id}/segment-box`
-
-**用途**: 通过矩形框选进行图像分割
-
-**路径参数**:
-
-- `session_id`: 会话ID
-
-**请求体**:
-
-```json
-{
-  "input_box": [100, 100, 300, 250]
-}
-```
-
-**字段说明**:
-
-- `input_box`: 矩形框坐标 [x1, y1, x2, y2]
-- 坐标系: 左上角为原点 (0,0)
-
-**请求示例**:
-
-```
-POST http://localhost:7001/sessions/550e8400-e29b-41d4-a716-446655440000/segment-box
-Content-Type: application/json
-
-{
-  "input_box": [100, 100, 300, 250]
-}
-```
-
-**预期响应**:
+响应：
 
 ```json
 {
   "masks": [
-    {
-      "mask_id": 0,
-      "score": 0.95,
-      "area": 15234
-    },
-    {
-      "mask_id": 1,
-      "score": 0.88,
-      "area": 12456
-    }
+    { "mask_id": "m_0", "score": 0.95, "path": "/tmp/.../m_0.png" },
+    { "mask_id": "m_1", "score": 0.90, "path": "/tmp/.../m_1.png" },
+    { "mask_id": "m_2", "score": 0.82, "path": "/tmp/.../m_2.png" }
   ],
-  "segment_time": 0.15
+  "width": 1024,
+  "height": 768
 }
 ```
 
-**测试验证**:
+校验：掩码按 score 降序；mask_id 可用于后续润色/导出。
 
-- ✅ 状态码: 200
-- ✅ 返回多个候选掩码
-- ✅ 掩码按分数排序 (高到低)
-- ✅ 分割时间 < 1秒
+### 5. 画笔润色 /sam/brush-refinement
 
----
-
-### 6. 点击分割
-
-**POST** `/sessions/{session_id}/segment-point`
-
-**用途**: 通过点击进行图像分割
-
-**请求体**:
+请求示例：
 
 ```json
 {
-  "input_point": [200, 150],
-  "input_label": 1
+  "session_id": "<session_uuid>",
+  "mask_id": "m_0",
+  "strokes": [
+    { "x": 0.45, "y": 0.32, "brush_size": 0.02, "brush_mode": "add" },
+    { "x": 0.52, "y": 0.41, "brush_size": 0.02, "brush_mode": "erase" }
+  ],
+  "roi_box": [120,150,240,270]
 }
 ```
 
-**字段说明**:
-
-- `input_point`: 点击坐标 [x, y]
-- `input_label`: 1=前景点, 0=背景点
-
-**测试用例**:
-
-**用例1: 前景点**
+响应：
 
 ```json
 {
-  "input_point": [200, 150],
-  "input_label": 1
+  "refined_mask_id": "m_0_refined_1",
+  "refined_mask_path": "/tmp/.../m_0_refined_1.png",
+  "width": 1024,
+  "height": 768
 }
 ```
 
-**用例2: 背景点**
+可多次迭代；前端可更新当前使用的 mask_id。
+
+### 6. 获取掩码 PNG /sam/mask/{session_id}/{mask_id}
+
+```http
+GET /sam/mask/<session_uuid>/m_0 HTTP/1.1
+Host: localhost:7001
+```
+
+期望：HTTP 200 / image/png / 黑白掩码。
+
+### 7. 导出 ROI /sam/export-roi
+
+最小参数：session_id + mask_id + roi_index。
+
+可选：roi_box（未传则使用整图），feather_px（羽化，默认 0），mask_png_b64（直接提供外部自定义掩码，替代 mask_id）。
+
+请求：
 
 ```json
 {
-  "input_point": [50, 50],
-  "input_label": 0
+  "session_id": "<session_uuid>",
+  "mask_id": "m_0_refined_1",
+  "roi_index": 1,
+  "feather_px": 4,
+  "roi_box": [120,150,360,420]
 }
 ```
 
-**预期响应**: 同框选分割接口
-
----
-
-### 7. 多点分割
-
-**POST** `/sessions/{session_id}/segment-points`
-
-**用途**: 通过多个点进行精确分割
-
-**请求体**:
+响应：
 
 ```json
 {
-  "input_points": [[200, 150], [250, 180], [180, 200]],
-  "input_labels": [1, 1, 1]
+  "sprite_path": "/files/seg_drawing_0006_roi_01_1695640000_a1b2.png",
+  "bbox": { "xmin":120, "ymin":150, "xmax":360, "ymax":420 }
 }
 ```
 
-**高级测试用例**:
+校验：output/ 下出现对应文件；命名格式 `seg_{stem}_roi_{index}_{timestamp}_{rand}.png`。
+
+### 8. 资产列出 /assets/list
+
+```http
+GET /assets/list HTTP/1.1
+Host: localhost:7001
+```
+
+响应包含 sprite 文件列表；支持 ?pattern=seg_drawing_0006* 过滤。
+
+### 9. 资产删除 /assets/delete
 
 ```json
-{
-  "input_points": [[200, 150], [250, 180], [50, 50], [400, 50]],
-  "input_labels": [1, 1, 0, 0]
-}
+{ "name": "seg_drawing_0006_roi_01_1695640000_a1b2.png" }
 ```
 
-**预期响应**: 同框选分割接口
+成功：`{"success":true,"deleted":"...png"}`；文件名限制在 output 根，不支持路径穿越。
 
----
+## 🧪 完整工作流示例
 
-### 8. 获取掩码图片
+1. GET /health → 200
+2. POST /sam/init （保存 session_id 环境变量）
+3. POST /sam/segment （保存第一个 masks[0].mask_id 为 mask_id）
+4. POST /sam/brush-refinement （可选，更新 mask_id=refined_mask_id）
+5. POST /sam/export-roi （保存 sprite_path）
+6. GET  /assets/list （验证导出文件存在）
+7. DELETE /assets/delete （验证删除成功）
 
-**GET** `/sessions/{session_id}/mask/{mask_id}`
+## 🚧 边界与错误测试
 
-**用途**: 获取指定掩码的可视化图片
+| 场景 | 操作 | 期望 |
+|------|------|------|
+| 未提供 image_path / image_b64 | POST /sam/init | 400 Bad Request |
+| 无效 session_id | POST /sam/segment | 404 Session not found |
+| 未初始化直接 segment | POST /sam/segment | 404 |
+| 无效 mask_id 取掩码 | GET /sam/mask/{sid}/xxx | 404 |
+| export 缺少 mask_id 与 mask_png_b64 | POST /sam/export-roi | 400 |
+| 删除不存在文件 | DELETE /assets/delete | 404 |
 
-**路径参数**:
+## ⚙️ Postman 自动化配置
 
-- `session_id`: 会话ID
-- `mask_id`: 掩码ID (从分割接口获得)
+### 环境变量建议
 
-**请求示例**:
-
-```
-GET http://localhost:7001/sessions/550e8400-e29b-41d4-a716-446655440000/mask/0
-```
-
-**预期响应**:
-
-- Content-Type: `image/png`
-- 黑白掩码图片 (白色=选中区域, 黑色=背景)
-
----
-
-### 9. 导出ROI (抠图结果)
-
-**GET** `/sessions/{session_id}/export-roi/{mask_id}`
-
-**用途**: 导出透明背景的PNG抠图结果
-
-**请求示例**:
-
-```
-GET http://localhost:7001/sessions/550e8400-e29b-41d4-a716-446655440000/export-roi/0
-```
-
-**预期响应**:
-
-- Content-Type: `image/png`
-- 透明背景PNG图片
-- 只包含选中区域的内容
-
-**测试验证**:
-
-- ✅ 状态码: 200
-- ✅ 图片格式为PNG
-- ✅ 背景透明
-- ✅ 前景清晰完整
-
----
-
-### 10. Base64导出
-
-**GET** `/sessions/{session_id}/export-roi-b64/{mask_id}`
-
-**用途**: 获取Base64编码的抠图结果
-
-**预期响应**:
-
-```json
-{
-  "image_b64": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAA...",
-  "mask_id": 0,
-  "format": "png"
-}
-```
-
----
-
-## 🧪 完整测试流程
-
-### 标准工作流测试
-
-1. **健康检查**
-
-   ```
-   GET /health
-   ```
-
-2. **上传文件**
-
-   ```
-   POST /upload-file
-   (获取session_id)
-   ```
-
-3. **编码处理**
-
-   ```
-   POST /sessions/{session_id}/encode
-   ```
-
-4. **分割测试**
-
-   ```
-   POST /sessions/{session_id}/segment-box
-   (获取mask列表)
-   ```
-
-5. **结果验证**
-
-   ```
-   GET /sessions/{session_id}/mask/0
-   GET /sessions/{session_id}/export-roi/0
-   ```
-
-### 边界条件测试
-
-**无效会话ID**:
-
-```
-GET /sessions/invalid-uuid/original
-预期: 404 Not Found
-```
-
-**无效掩码ID**:
-
-```
-GET /sessions/{valid_session_id}/mask/999
-预期: 404 Not Found
-```
-
-**空文件上传**:
-
-```
-POST /upload-file
-(不选择文件)
-预期: 422 Unprocessable Entity
-```
-
-**未编码直接分割**:
-
-```
-POST /sessions/{session_id}/segment-box
-(跳过encode步骤)
-预期: 400 Bad Request
-```
-
-## 📊 性能基准
-
-### 预期响应时间
-
-- 文件上传: < 1秒
-- SAM编码: 3-8秒 (首次较慢)
-- 图像分割: < 500ms
-- 图片获取: < 200ms
-
-### 内存使用
-
-- 空闲状态: ~2GB
-- 处理1080p图片: ~4GB
-- 多会话并发: 每会话+1GB
-
-## 🔧 Postman配置
-
-### 环境变量设置
+### Tests 脚本示例（放在 /sam/init /sam/segment /sam/brush-refinement /sam/export-roi 请求里）
 
 ```javascript
-// 在Tests标签中添加自动化脚本
 if (pm.response.code === 200) {
-    var jsonData = pm.response.json();
-    if (jsonData.session_id) {
-        pm.environment.set("session_id", jsonData.session_id);
-    }
+  const data = pm.response.json();
+  if (data.session_id) pm.environment.set('session_id', data.session_id);
+  if (data.masks && data.masks.length > 0) pm.environment.set('mask_id', data.masks[0].mask_id);
+  if (data.refined_mask_id) pm.environment.set('mask_id', data.refined_mask_id);
+  if (data.sprite_path) pm.environment.set('sprite_path', data.sprite_path);
 }
 ```
 
-### 集合变量
-
-- `base_url`: `http://localhost:7001`
-- `session_id`: 动态获取
-- `mask_id`: 动态获取
-
-### 预请求脚本
+### 预请求脚本（示例）
 
 ```javascript
-// 检查必需的环境变量
-if (!pm.environment.get("session_id")) {
-    console.log("Warning: session_id not set, please run upload-file first");
+// 仅在非 init 请求中提醒缺失 session
+if (pm.request.url.toString().includes('/sam/') && !pm.request.url.toString().endsWith('/sam/init')) {
+  if (!pm.environment.get('session_id')) {
+    console.warn('session_id 缺失，请先调用 /sam/init');
+  }
 }
 ```
 
-## 🐛 常见问题
+## � 性能参考 (单机调试)
 
-### 1. 连接被拒绝
+| 步骤 | 典型耗时 | 说明 |
+|------|----------|------|
+| /sam/init | 1-3s | 首次加载模型可能更慢 (权重冷启动) |
+| /sam/segment | <400ms | 取决于 top_n / 分辨率 |
+| /sam/brush-refinement | <200ms | 小掩码增量处理 |
+| /sam/mask 获取 | <150ms | 读取临时文件 |
+| /sam/export-roi | <300ms | ROI 裁剪 + feather |
+| /assets/list | <50ms | 目录扫描 |
 
-**原因**: 后端服务未启动
-**解决**: 检查服务状态，重启服务
+调优建议：
 
-### 2. 编码超时
+## 🐛 常见问题与排查
 
-**原因**: SAM模型加载时间长
-**解决**: 设置更长的请求超时时间 (30秒)
-
-### 3. 内存不足
-
-**原因**: 图片过大或并发过多
-**解决**: 压缩图片或减少并发数
-
-### 4. 掩码质量差
-
-**原因**: 输入点/框不准确
-**解决**: 调整输入坐标，尝试多种组合
+| 问题 | 可能原因 | 处理建议 |
+|------|----------|----------|
+| init 过慢 | 首次模型加载 | 观察日志，仅第一次慢属正常 |
+| segment 404 | session_id 失效 | 重新 init 获取新 ID |
+| 掩码锯齿 | feather_px=0 | 适当设置 feather_px (2~6) |
+| ROI 导出空白 | roi_box 不含前景 | 检查 roi_box 或不用 roi_box 试整图 |
+| 删除失败 | 文件名不匹配 | 确认名称来自 /assets/list 原样拷贝 |
 
 ## 📝 测试检查清单
 
-- [ ] 所有API端点正常响应
-- [ ] 文件上传成功
-- [ ] SAM编码完成
-- [ ] 分割结果质量良好
-- [ ] 图片导出正确
-- [ ] 错误处理恰当
-- [ ] 性能满足要求
-- [ ] 内存使用正常
-
----
-
-**祝测试愉快！如有问题请查看服务器日志或联系技术支持。** 🎯
+**完成！若遇到异常请查看后端日志或提 Issue。** 🎯

@@ -646,41 +646,90 @@ export default function ControlPanel() {
 
     useEffect(() => { applyCameraCssFilters(); }, [applyCameraCssFilters]);
 
+    // 会话ID（第一次拍照创建，后续复用）
+    const [sessionId, setSessionId] = useState<string | null>(null);
+
     // 拍照 -> 生成 base64 并初始化 session
+    // 提前声明 sessionId state 位置已调整到函数上方以避免闭包错误
     const captureFromCamera = useCallback(async () => {
         if (!videoRef.current) return;
         setCapturing(true);
+        const t0 = performance.now();
         try {
             const video = videoRef.current;
             const canvas = cameraCanvasRef.current || document.createElement('canvas');
-            canvas.width = video.videoWidth || 1280;
-            canvas.height = video.videoHeight || 720;
+            const targetMax = 960;
+            const vw = video.videoWidth || 1280;
+            const vh = video.videoHeight || 720;
+            const scale = Math.min(1, targetMax / Math.max(vw, vh));
+            canvas.width = Math.round(vw * scale);
+            canvas.height = Math.round(vh * scale);
             const ctx = canvas.getContext('2d');
             if (!ctx) return;
             ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-            const dataUrl = canvas.toDataURL('image/png');
-            // 初始化后端 session
-            const initRes = await apiService.initSessionFromBase64(dataUrl, `camera_${Date.now()}.png`);
-            if (!initRes.success) {
-                setError(initRes.error || '摄像头图片会话初始化失败');
-                return;
+            const t1 = performance.now();
+            const dataUrl = canvas.toDataURL('image/jpeg', 0.8);
+            const t2 = performance.now();
+
+            // 保存到本地（Electron 主进程）
+            const saver = (window as any).electronAPI?.saveCameraImage;
+            let savedPath: string | null = null;
+            if (saver) {
+                const saveRes = await saver(dataUrl, `camera_${Date.now()}`);
+                if (saveRes?.success) {
+                    savedPath = saveRes.path;
+                } else {
+                    console.warn('保存摄像头图片失败，回退 base64 模式', saveRes?.error);
+                }
             }
-            // 用 <img> 加载以便后续流程复用 image 变量
+
+            let newSessionId = sessionId;
+            let phaseLabel = 'update';
+            let apiTimeStart = performance.now();
+            if (!newSessionId) { // init
+                let initRes;
+                if (savedPath) {
+                    initRes = await apiService.initSessionFromPath(savedPath, undefined, targetMax);
+                } else {
+                    initRes = await apiService.initSessionFromBase64(dataUrl, `camera_${Date.now()}.jpg`, targetMax);
+                }
+                if (!initRes.success) {
+                    setError(initRes.error || '摄像头图片会话初始化失败');
+                    return;
+                }
+                newSessionId = initRes.sessionId || null;
+                phaseLabel = 'init';
+            } else {
+                let upd;
+                if (savedPath) {
+                    upd = await apiService.updateImageFromPath(newSessionId, savedPath, targetMax);
+                } else {
+                    upd = await apiService.updateImageBase64(newSessionId, dataUrl, targetMax);
+                }
+                if (!upd.success) {
+                    setError(upd.error || 'update-image失败');
+                    return;
+                }
+            }
+            const apiTimeEnd = performance.now();
+
             const img = new Image();
             img.onload = () => {
                 setImage(img);
-                setImageFile(null); // 摄像头模式不需要本地文件
-                setSessionId(initRes.sessionId || null);
+                setImageFile(null);
+                setSessionId(newSessionId);
                 setCurrentStep('roi_selection');
-                // 拍照成功后自动关闭摄像头预览并释放媒体流
-                if (videoRef.current?.srcObject) {
-                    try {
+                // 自动关闭摄像头：用户需求（完成一次拍照后释放资源）
+                try {
+                    if (videoRef.current && (videoRef.current.srcObject instanceof MediaStream)) {
                         const tracks = (videoRef.current.srcObject as MediaStream).getTracks();
                         tracks.forEach(t => t.stop());
-                    } catch { /* ignore */ }
-                    videoRef.current!.srcObject = null;
-                }
+                        videoRef.current.srcObject = null;
+                    }
+                } catch { }
                 setUseCamera(false);
+                const t4 = performance.now();
+                console.log(`[Camera][Perf-${phaseLabel}] draw=${(t1 - t0).toFixed(1)}ms toDataURL=${(t2 - t1).toFixed(1)}ms api=${(apiTimeEnd - apiTimeStart).toFixed(1)}ms imgOnload=${(t4 - apiTimeEnd).toFixed(1)}ms total=${(t4 - t0).toFixed(1)}ms`);
             };
             img.src = dataUrl;
         } catch (e) {
@@ -688,7 +737,7 @@ export default function ControlPanel() {
         } finally {
             setCapturing(false);
         }
-    }, [apiService]);
+    }, [apiService, sessionId]);
     const [serverStatus, setServerStatus] = useState<'checking' | 'online' | 'offline'>('checking');
 
     // 工作流状态
@@ -702,7 +751,8 @@ export default function ControlPanel() {
     const [points, setPoints] = useState<Point[]>([]);
     const [candidates, setCandidates] = useState<SegmentationCandidate[]>([]);
     const [selectedCandidate, setSelectedCandidate] = useState<string | null>(null);
-    const [sessionId, setSessionId] = useState<string | null>(null);
+    // 用于判断当前 session 是否与当前图像匹配（文件：name+size+mtime；摄像头：camera_<sessionId>）
+    const [imageSessionSignature, setImageSessionSignature] = useState<string | null>(null);
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
@@ -1007,6 +1057,9 @@ export default function ControlPanel() {
         setRoiBoxes([]);
         setPoints([]);
         setCandidates([]);
+        // 切换文件后强制清空旧 session，使后端重新 init
+        setSessionId(null);
+        setImageSessionSignature(null);
         setCurrentStep('roi_selection');
 
         const reader = new FileReader();
@@ -1150,16 +1203,46 @@ export default function ControlPanel() {
             // 获取当前ROI的坐标
             const currentROI = roiBoxes[currentROIIndex];
 
+            // 计算当前图像签名
+            let newSignature: string | null = null;
+            if (imageFile) {
+                newSignature = `${imageFile.name}_${imageFile.size}_${imageFile.lastModified}`;
+            } else if (sessionId && !imageFile) {
+                newSignature = imageSessionSignature || `camera_${sessionId}`;
+            }
+
+            let workingSessionId = sessionId;
+            // 当不存在 session 或 图像签名变化 时，重新 init
+            if (!workingSessionId || (newSignature && newSignature !== imageSessionSignature)) {
+                if (imageFile) {
+                    const initRes = await apiService.initSession(imageFile);
+                    if (!initRes.success || !initRes.sessionId) {
+                        setError(initRes.error || '会话初始化失败');
+                        setIsLoading(false);
+                        return;
+                    }
+                    workingSessionId = initRes.sessionId;
+                    setSessionId(initRes.sessionId);
+                    setImageSessionSignature(newSignature);
+                } else if (!imageFile && !workingSessionId) {
+                    setError('缺少有效会话，请重新上传或拍照');
+                    setIsLoading(false);
+                    return;
+                }
+            }
+
             const response = await apiService.performSegmentation({
                 file: imageFile || undefined,
-                sessionId: sessionId || undefined,
+                sessionId: workingSessionId || undefined,
                 points: points,
-                roiBox: currentROI // 传递ROI坐标给后端
+                roiBox: currentROI
             });
 
             if (response.success && response.data) {
-                // 保存sessionId供后续使用
-                setSessionId(response.data.session_id);
+                // 若是新 init 场景已经 set 过，这里仅在缺失时补充
+                if (!sessionId) {
+                    setSessionId(response.data.session_id);
+                }
 
                 // 将后端返回的masks转换为candidates
                 const newCandidates: SegmentationCandidate[] = response.data.masks.map((mask, index) => ({

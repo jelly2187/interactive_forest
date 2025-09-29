@@ -69,6 +69,52 @@ class ApiService {
         this.baseUrl = baseUrl;
     }
 
+    // 更新已有会话的底图（提升摄像头连续拍照速度）
+    async updateImage(sessionId: string, fileOrDataUrl: File | string): Promise<{ success: boolean; width?: number; height?: number; error?: string }> {
+        try {
+            let image_b64: string | null = null;
+            // 目前后端只实现了 image_path 版本；如果是 File 则仍然走 /sam/init 暂不使用
+            if (typeof fileOrDataUrl !== 'string') {
+                // 回退策略：重新 init（等后端支持 base64 update 再切换）
+                const initRes = await this.initSession(fileOrDataUrl);
+                if (!initRes.success) return { success: false, error: initRes.error };
+                return { success: true, width: initRes.width, height: initRes.height };
+            } else {
+                image_b64 = fileOrDataUrl;
+                // 暂时直接重新 init（因后端 update-image 仅支持 image_path）。
+                const response = await fetch(`${this.baseUrl}/sam/init`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ image_b64, image_name: `camera_${Date.now()}.png`, keep_session: false })
+                });
+                if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+                const result = await response.json();
+                return { success: true, width: result.width, height: result.height };
+            }
+        } catch (e) {
+            return { success: false, error: e instanceof Error ? e.message : '更新图像失败' };
+        }
+    }
+
+    // 直接使用 base64 更新已有会话图像（复用 predictor），可传 maxSide
+    async updateImageBase64(sessionId: string, dataUrl: string, maxSide: number | null = 960): Promise<{ success: boolean; width?: number; height?: number; error?: string }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/sam/update-image`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, image_b64: dataUrl, max_side: maxSide })
+            });
+            if (!response.ok) {
+                const txt = await response.text();
+                return { success: false, error: `update-image失败 ${response.status} ${txt}` };
+            }
+            const result = await response.json();
+            return { success: true, width: result.width, height: result.height };
+        } catch (e) {
+            return { success: false, error: e instanceof Error ? e.message : 'update-image 请求异常' };
+        }
+    }
+
     // 测试服务器连接
     async healthCheck(): Promise<boolean> {
         try {
@@ -88,14 +134,12 @@ class ApiService {
 
             const response = await fetch(`${this.baseUrl}/sam/init`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     image_b64: base64,
                     image_name: file.name,
-                    keep_session: true
-                }),
+                    keep_session: false // 强制重置旧会话，避免第二张图复用旧 predictor
+                })
             });
 
             if (!response.ok) {
@@ -118,13 +162,45 @@ class ApiService {
         }
     }
 
-    // 通过 base64 直接初始化会话（用于摄像头截图）
-    async initSessionFromBase64(dataUrl: string, logicalName: string = 'camera_capture.png'): Promise<{ success: boolean, sessionId?: string, width?: number, height?: number, error?: string }> {
+    // 通过 image_path 初始化（本地已保存）
+    async initSessionFromPath(imagePath: string, logicalName?: string, maxSide: number | null = 960) {
         try {
             const response = await fetch(`${this.baseUrl}/sam/init`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ image_b64: dataUrl, image_name: logicalName, keep_session: true })
+                body: JSON.stringify({ image_path: imagePath, image_name: logicalName || imagePath.split(/[/\\]/).pop(), keep_session: false, max_side: maxSide })
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const r = await response.json();
+            return { success: true, sessionId: r.session_id, width: r.width, height: r.height };
+        } catch (e) {
+            return { success: false, error: e instanceof Error ? e.message : 'initSessionFromPath失败' };
+        }
+    }
+
+    // 使用 image_path 更新已有会话
+    async updateImageFromPath(sessionId: string, imagePath: string, maxSide: number | null = 960) {
+        try {
+            const response = await fetch(`${this.baseUrl}/sam/update-image`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ session_id: sessionId, image_path: imagePath, max_side: maxSide })
+            });
+            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const r = await response.json();
+            return { success: true, width: r.width, height: r.height };
+        } catch (e) {
+            return { success: false, error: e instanceof Error ? e.message : 'updateImageFromPath失败' };
+        }
+    }
+
+    // 通过 base64 直接初始化会话（用于摄像头截图）
+    async initSessionFromBase64(dataUrl: string, logicalName: string = 'camera_capture.png', maxSide: number | null = 960): Promise<{ success: boolean, sessionId?: string, width?: number, height?: number, error?: string }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/sam/init`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ image_b64: dataUrl, image_name: logicalName, keep_session: false, max_side: maxSide })
             });
             if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
             const result = await response.json();
