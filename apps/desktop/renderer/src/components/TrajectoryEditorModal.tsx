@@ -15,6 +15,7 @@ interface TrajectoryEditorModalProps {
     element: {
         id: string;
         name: string;
+        image?: string; // 可选：元素缩略图路径（若无则用占位圆）
         position: { x: number; y: number };
         scale: number;
         rotation: number;
@@ -62,6 +63,15 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
     const bgImageRef = useRef<HTMLImageElement | null>(null);
     // const currentStrokeRef = useRef<Array<{ x: number; y: number }> | null>(null);
     const animationRef = useRef<number | null>(null);
+    const playStartRef = useRef<number>(0);
+    const elementImageRef = useRef<HTMLImageElement | null>(null);
+
+    // 全局尺寸滑条（对所有关键帧成比例缩放）
+    const [globalScaleFactor, setGlobalScaleFactor] = useState(1); // 1 = 不变
+    const prevGlobalScaleRef = useRef(1);
+
+    // 额外的播放累计时间（用于效果：呼吸 / 摇摆）
+    const [playElapsed, setPlayElapsed] = useState(0);
 
     // 请求一次背景快照（打开时）
     useEffect(() => {
@@ -106,6 +116,26 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
         };
     }, [isOpen]);
 
+    // 载入元素缩略图（如果有）
+    useEffect(() => {
+        if (!isOpen) return;
+        if (!element.image) { elementImageRef.current = null; return; }
+        const img = new Image();
+        img.onload = () => {
+            elementImageRef.current = img; requestAnimationFrame(() => {
+                // 延迟一次，等 canvasRef 安装完
+                const c = canvasRef.current; if (c) {
+                    const ctx = c.getContext('2d');
+                    if (ctx) { /* 触发一次重绘 */ drawTrajectoryPreview(); }
+                }
+            });
+        };
+        img.onerror = () => { elementImageRef.current = null; };
+        img.src = element.image;
+        // 不依赖 drawTrajectoryPreview，避免声明顺序引用问题
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isOpen, element.image]);
+
     // Easing helpers（与投影端保持一致）
     const easeLinear = (t: number) => t;
     const easeInCubic = (t: number) => t * t * t;
@@ -124,90 +154,70 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
 
     // 绘制轨迹预览
     const drawTrajectoryPreview = useCallback(() => {
-        const canvas = canvasRef.current;
-        if (!canvas) return;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) return;
-
-        // 清空
+        const canvas = canvasRef.current; if (!canvas) return;
+        const ctx = canvas.getContext('2d'); if (!ctx) return;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // 背景底图
+        // 背景
         if (bgImageRef.current) {
             try { ctx.drawImage(bgImageRef.current, 0, 0, canvas.width, canvas.height); } catch { }
         } else {
-            // 无底图时画参考网格
-            ctx.strokeStyle = '#333';
-            ctx.lineWidth = 1;
-            for (let x = 0; x <= canvas.width; x += 20) {
-                ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke();
-            }
-            for (let y = 0; y <= canvas.height; y += 20) {
-                ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke();
-            }
+            ctx.strokeStyle = '#333'; ctx.lineWidth = 1;
+            for (let x = 0; x <= canvas.width; x += 20) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); ctx.stroke(); }
+            for (let y = 0; y <= canvas.height; y += 20) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); }
         }
 
-        // 手绘路径渲染（禁用）
-
-        // 关键帧路径与点（仅在关键点模式显示）
-        if (keyframes.length >= 1) {
-            ctx.strokeStyle = '#2196F3';
-            ctx.lineWidth = 3;
-            if (keyframes.length >= 2) {
-                ctx.beginPath();
-                for (let i = 0; i < keyframes.length; i++) {
-                    const kf = keyframes[i];
-                    const x = (kf.x / 1920) * canvas.width;
-                    const y = (kf.y / 1080) * canvas.height;
-                    if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-                }
-                ctx.stroke();
-            }
-            keyframes.forEach((kf, index) => {
-                const x = (kf.x / 1920) * canvas.width;
-                const y = (kf.y / 1080) * canvas.height;
-                ctx.beginPath();
-                ctx.arc(x, y, 8, 0, 2 * Math.PI);
-                ctx.fillStyle = index === selectedKeyframe ? '#FF9800' : '#4CAF50';
-                ctx.fill();
-                ctx.strokeStyle = '#fff';
-                ctx.lineWidth = 2;
-                ctx.stroke();
-                ctx.fillStyle = '#fff';
-                ctx.font = '12px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText((index + 1).toString(), x, y + 4);
+        // 路径线
+        if (keyframes.length >= 2) {
+            ctx.strokeStyle = '#2196F3'; ctx.lineWidth = 3; ctx.beginPath();
+            keyframes.forEach((kf, i) => {
+                const px = (kf.x / 1920) * canvas.width; const py = (kf.y / 1080) * canvas.height;
+                if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
             });
-        }
-
-        // 当前播放位置标记
-        if (isPlaying) {
-            const rawProgress = duration > 0 ? (currentTime / duration) : 0;
-            const progress = applyEasing(rawProgress);
-            let currentPos = { x: 0, y: 0 };
-            if (mode === 'points' && keyframes.length > 1) {
-                for (let i = 0; i < keyframes.length - 1; i++) {
-                    const start = keyframes[i];
-                    const end = keyframes[i + 1];
-                    if (progress >= start.time && progress <= end.time) {
-                        const t = (progress - start.time) / (end.time - start.time);
-                        currentPos.x = start.x + (end.x - start.x) * t;
-                        currentPos.y = start.y + (end.y - start.y) * t;
-                        break;
-                    }
-                }
-            }
-            const fx = (currentPos.x / 1920) * canvas.width;
-            const fy = (currentPos.y / 1080) * canvas.height;
-            ctx.beginPath();
-            ctx.arc(fx, fy, 6, 0, 2 * Math.PI);
-            ctx.fillStyle = '#FF5722';
-            ctx.fill();
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 2;
             ctx.stroke();
         }
-    }, [keyframes, selectedKeyframe, isPlaying, currentTime, duration, mode, easing]);
+
+        // 关键帧标记（统一使用圆点）
+        keyframes.forEach((kf, index) => {
+            const px = (kf.x / 1920) * canvas.width; const py = (kf.y / 1080) * canvas.height;
+            ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI * 2);
+            ctx.fillStyle = index === selectedKeyframe ? '#FF9800' : '#4CAF50';
+            ctx.fill();
+            ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+            ctx.fillStyle = '#fff'; ctx.font = '12px Arial'; ctx.textAlign = 'center';
+            ctx.fillText(String(index + 1), px, py + 4);
+        });
+
+        // 仅在播放时渲染动态元素缩略图动画
+        if (isPlaying && keyframes.length > 0) {
+            let raw = duration > 0 ? (currentTime / duration) : 0; raw = Math.min(1, Math.max(0, raw));
+            const prog = applyEasing(raw);
+            const sampleAttr = (attr: keyof TrajectoryKeyframe, def: number) => {
+                if (keyframes.length === 1) return (keyframes[0] as any)[attr] ?? def;
+                for (let i = 0; i < keyframes.length - 1; i++) {
+                    const a = keyframes[i]; const b = keyframes[i + 1];
+                    if (prog >= a.time && prog <= b.time) {
+                        const span = (b.time - a.time) || 1; const t = span === 0 ? 0 : (prog - a.time) / span;
+                        const av = (a as any)[attr] ?? def; const bv = (b as any)[attr] ?? def;
+                        return av + (bv - av) * t;
+                    }
+                }
+                return (keyframes[keyframes.length - 1] as any)[attr] ?? def;
+            };
+            const pos = { x: sampleAttr('x', element.position.x), y: sampleAttr('y', element.position.y) };
+            let sc = sampleAttr('scale', element.scale) * globalScaleFactor; let rot = sampleAttr('rotation', element.rotation) || 0; let op = sampleAttr('opacity', 1);
+            if (effectType !== 'none') {
+                const period = Math.max(100, effectPeriodMs); const cyc = (playElapsed % period) / period; const wave = Math.sin(cyc * Math.PI * 2);
+                if (effectType === 'breathing') sc *= (1 + effectBreathAmp * wave); else if (effectType === 'swinging') rot += effectSwingDeg * wave;
+            }
+            const fx = (pos.x / 1920) * canvas.width; const fy = (pos.y / 1080) * canvas.height;
+            const img = elementImageRef.current; const base = 120; let w = base * sc; let h = base * sc;
+            if (img) { const iw = img.naturalWidth || base; const ih = img.naturalHeight || base; const asp = iw / ih; h = base * sc; w = h * asp; }
+            ctx.save(); ctx.translate(fx, fy); ctx.rotate(rot * Math.PI / 180); ctx.globalAlpha = op;
+            if (img) ctx.drawImage(img, -w / 2, -h / 2, w, h); else { ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.strokeStyle = '#FF5722'; ctx.lineWidth = 2; ctx.beginPath(); ctx.rect(-w / 2, -h / 2, w, h); ctx.fill(); ctx.stroke(); }
+            ctx.restore();
+        }
+    }, [keyframes, selectedKeyframe, currentTime, duration, applyEasing, element.position.x, element.position.y, element.scale, element.rotation, globalScaleFactor, effectType, effectBreathAmp, effectSwingDeg, effectPeriodMs, playElapsed, isPlaying]);
 
     useEffect(() => {
         drawTrajectoryPreview();
@@ -252,6 +262,8 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
     const playAnimation = () => {
         setIsPlaying(true);
         setCurrentTime(0);
+        setPlayElapsed(0);
+        playStartRef.current = performance.now();
         const startTime = Date.now();
         const animate = () => {
             const elapsed = Date.now() - startTime;
@@ -263,11 +275,13 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
             } else {
                 setCurrentTime(elapsed);
             }
+            setPlayElapsed(performance.now() - playStartRef.current);
             if (!over || loop) {
                 animationRef.current = requestAnimationFrame(animate);
             } else {
                 setIsPlaying(false);
                 setCurrentTime(0);
+                setPlayElapsed(0);
             }
         };
         animationRef.current = requestAnimationFrame(animate);
@@ -277,6 +291,7 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
         if (animationRef.current) cancelAnimationFrame(animationRef.current);
         setIsPlaying(false);
         setCurrentTime(0);
+        setPlayElapsed(0);
     };
 
     // 将手绘笔划采样为关键帧
@@ -430,6 +445,39 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                     >
                         {isPlaying ? '⏹️ 停止' : '▶️ 预览'}
                     </button>
+                </div>
+
+                {/* 全局尺寸调整 */}
+                <div style={{ marginBottom: 20 }}>
+                    <label style={{ display: 'block', marginBottom: 6, fontSize: 13 }}>
+                        全局尺寸调整: {(globalScaleFactor * 100).toFixed(0)}%
+                    </label>
+                    <input
+                        type="range"
+                        min={0.2}
+                        max={3}
+                        step={0.05}
+                        value={globalScaleFactor}
+                        onChange={(e) => {
+                            const newVal = parseFloat(e.target.value);
+                            const ratio = newVal / prevGlobalScaleRef.current;
+                            setKeyframes(prev => prev.map(kf => ({ ...kf, scale: (kf.scale ?? element.scale) * ratio })));
+                            prevGlobalScaleRef.current = newVal;
+                            setGlobalScaleFactor(newVal);
+                        }}
+                        style={{ width: '100%' }}
+                    />
+                    <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
+                        <button
+                            onClick={() => {
+                                const base = element.scale || 1;
+                                setKeyframes(prev => prev.map(kf => ({ ...kf, scale: base })));
+                                prevGlobalScaleRef.current = 1;
+                                setGlobalScaleFactor(1);
+                            }}
+                            style={{ padding: '4px 10px', background: '#555', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer', fontSize: 12 }}
+                        >重置尺寸</button>
+                    </div>
                 </div>
 
                 {/* 运动效果设置 */}
