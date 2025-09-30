@@ -8,6 +8,7 @@ tsconfig.tsbuildinfo
 /apps/cv_service/app/models
 /apps/desktop/node_modules/
 /apps/desktop/renderer/public/
+/apps/desktop/presets/
 
 *.png
 *.env

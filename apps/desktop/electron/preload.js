@@ -15,5 +15,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
     onRequestBackground: (callback) => ipcRenderer.on('request-background', callback),
     replyBackground: (dataUrl) => ipcRenderer.send('reply-background', dataUrl),
     removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
-    saveCameraImage: (dataUrl, name) => ipcRenderer.invoke('save-camera-image', { dataUrl, name })
+    saveCameraImage: (dataUrl, name) => ipcRenderer.invoke('save-camera-image', { dataUrl, name }),
+    saveElementPreset: (name, data) => ipcRenderer.invoke('save-element-preset', { name, data }),
+    loadElementPresets: () => ipcRenderer.invoke('load-element-presets')
 });

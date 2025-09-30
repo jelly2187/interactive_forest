@@ -1712,17 +1712,101 @@ export default function ControlPanel() {
         setTrajectoryModalOpen(true);
     }, []);
 
-    // 更新元素音效配置（统一通过 sendProjectionMessage 通知投影窗口）
+    // 预设加载标记
+    const presetsLoadedRef = useRef(false);
+    // 已加载的预设集合（key: 元素基础名）
+    const loadedPresetsRef = useRef<Map<string, ElementPresetFile>>(new Map());
+    // 已应用过预设的元素 id，避免重复合并
+    const appliedPresetElementIdsRef = useRef<Set<string>>(new Set());
+
+    // 根据当前 processedElements 试图应用预设（仅第一次或新增元素）
+    const applyPresetsToElements = useCallback(() => {
+        if (loadedPresetsRef.current.size === 0) return;
+        const normalize = (s: string) => s.toLowerCase().replace(/\\/g, '/').split('/').pop()!.replace(/\?.*$/, '').replace(/\.[^.]+$/, '');
+        const appliedMessages: Array<{ id: string; audio?: any; trajectory?: any }> = [];
+        setProcessedElements(prev => {
+            let changed = false;
+            const next = prev.map(el => {
+                const rawName = el.image || el.name;
+                const norm = normalize(rawName);
+                let preset: ElementPresetFile | undefined;
+                for (const [k, v] of loadedPresetsRef.current.entries()) {
+                    if (normalize(k) === norm) { preset = v; break; }
+                }
+                if (!preset) return el;
+                // 判定是否需要重新合并：缺少字段 / keyframe 数量不同 / 音效缺失
+                const needAudio = !!preset.audio && (
+                    !el.audio || ['src', 'volume', 'loop', 'isPlaying'].some(k => (preset!.audio as any)[k] !== (el.audio as any)[k])
+                );
+                const needTrajectory = !!preset.trajectory && (
+                    !el.trajectory ||
+                    (Array.isArray(preset.trajectory.keyframes) && Array.isArray(el.trajectory.keyframes) && preset.trajectory.keyframes.length !== el.trajectory.keyframes.length) ||
+                    (!el.trajectory.keyframes && !!preset.trajectory.keyframes)
+                );
+                if (!needAudio && !needTrajectory) return el; // 已一致
+                changed = true;
+                const mergedAudio = needAudio ? (
+                    el.audio ? {
+                        src: preset.audio!.src ?? el.audio.src,
+                        volume: preset.audio!.volume ?? el.audio.volume,
+                        loop: preset.audio!.loop ?? el.audio.loop,
+                        isPlaying: preset.audio!.isPlaying ?? el.audio.isPlaying
+                    } : (
+                        preset.audio && preset.audio.src ? {
+                            src: preset.audio.src,
+                            volume: preset.audio.volume ?? 1,
+                            loop: preset.audio.loop ?? false,
+                            isPlaying: preset.audio.isPlaying ?? false
+                        } : el.audio
+                    )
+                ) : el.audio;
+                let mergedTrajectory = needTrajectory ? { ...preset.trajectory } : el.trajectory;
+                if (mergedTrajectory && Array.isArray(mergedTrajectory.keyframes) && mergedTrajectory.keyframes.length >= 2) {
+                    // 只在原本没有轨迹或未在播放时初始化 startTime，避免不断回到起点
+                    const keepExisting = !!el.trajectory && el.trajectory.isAnimating && el.trajectory.keyframes?.length === mergedTrajectory.keyframes.length;
+                    mergedTrajectory = {
+                        ...mergedTrajectory,
+                        isAnimating: true,
+                        startTime: keepExisting ? el.trajectory!.startTime : Date.now()
+                    };
+                }
+                appliedMessages.push({ id: el.id, audio: mergedAudio, trajectory: mergedTrajectory });
+                // console.log('[Preset] 覆盖/更新元素:', el.name, 'needAudio=', needAudio, 'needTrajectory=', needTrajectory);
+                return { ...el, audio: mergedAudio, trajectory: mergedTrajectory } as ProcessedElement;
+            });
+            if (!changed) return prev;
+            setTimeout(() => {
+                appliedMessages.forEach(msg => {
+                    if (msg.audio && !msg.trajectory) {
+                        // 仅音效变化
+                        sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: { id: msg.id, audio: msg.audio } });
+                    } else if (msg.trajectory) {
+                        sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: { id: msg.id, trajectory: msg.trajectory, audio: msg.audio } });
+                    }
+                });
+            }, 0);
+            return next;
+        });
+    }, [sendProjectionMessage]);
+
+    // 更新元素音效配置（更新后保存预设）
     const updateElementAudio = useCallback((audioConfig: any) => {
         if (!selectedElementForModal) return;
         setProcessedElements(prev => prev.map(el => el.id === selectedElementForModal.id ? { ...el, audio: audioConfig } : el));
         sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: { id: selectedElementForModal.id, audio: audioConfig } });
+        try {
+            const target = selectedElementForModal;
+            const raw = (target.image?.split('/')?.pop() || target.name || target.id);
+            const baseName = raw.replace(/\.[^.]+$/, '');
+            (window as any).electronAPI?.saveElementPreset?.(raw, { audio: audioConfig, trajectory: target.trajectory });
+            const old = loadedPresetsRef.current.get(baseName) || { name: baseName, updatedAt: Date.now() } as ElementPresetFile;
+            loadedPresetsRef.current.set(baseName, { ...old, audio: audioConfig, trajectory: old.trajectory || target.trajectory, updatedAt: Date.now() });
+        } catch (e) { console.warn('保存音效预设失败:', (e as any)?.message); }
     }, [selectedElementForModal, sendProjectionMessage]);
 
-    // 更新元素轨迹配置
+    // 更新元素轨迹配置（更新后保存预设）
     const updateElementTrajectory = useCallback((trajectoryConfig: any) => {
         if (!selectedElementForModal) return;
-        // 如果关键帧有效，立即启动动画并设置开始时间
         const hasValidKeyframes = Array.isArray(trajectoryConfig?.keyframes) && trajectoryConfig.keyframes.length >= 2;
         const mergedTrajectory = {
             ...trajectoryConfig,
@@ -1731,7 +1815,38 @@ export default function ControlPanel() {
         };
         setProcessedElements(prev => prev.map(el => el.id === selectedElementForModal.id ? { ...el, trajectory: mergedTrajectory } : el));
         sendProjectionMessage({ type: 'UPDATE_ELEMENT', data: { id: selectedElementForModal.id, trajectory: mergedTrajectory } });
-    }, [selectedElementForModal, sendProjectionMessage]);
+        try {
+            const target = selectedElementForModal;
+            const raw = (target.image?.split('/')?.pop() || target.name || target.id);
+            const baseName = raw.replace(/\.[^.]+$/, '');
+            const audioPart = processedElements.find(el => el.id === target.id)?.audio;
+            (window as any).electronAPI?.saveElementPreset?.(raw, { trajectory: mergedTrajectory, audio: audioPart });
+            const old = loadedPresetsRef.current.get(baseName) || { name: baseName, updatedAt: Date.now() } as ElementPresetFile;
+            loadedPresetsRef.current.set(baseName, { ...old, trajectory: mergedTrajectory, audio: old.audio || audioPart, updatedAt: Date.now() });
+        } catch (e) { console.warn('保存轨迹预设失败:', (e as any)?.message); }
+    }, [selectedElementForModal, sendProjectionMessage, processedElements]);
+
+    // 启动时加载本地预设并合并
+    useEffect(() => {
+        if (presetsLoadedRef.current) return;
+        presetsLoadedRef.current = true;
+        (async () => {
+            try {
+                const res = await (window as any).electronAPI?.loadElementPresets?.();
+                if (!res?.success) return;
+                const presets: ElementPresetFile[] = res.presets || [];
+                presets.forEach(p => { if (p?.name) loadedPresetsRef.current.set(p.name, p); });
+                console.log('[Preset] 载入预设文件数:', presets.length, '条');
+                // 初始尝试应用
+                applyPresetsToElements();
+            } catch (e) { console.warn('加载元素预设失败:', (e as any)?.message); }
+        })();
+    }, [applyPresetsToElements]);
+
+    // 当 processedElements 变化（例如新增元素）时，尝试为尚未应用的元素套用预设
+    useEffect(() => {
+        applyPresetsToElements();
+    }, [processedElements, applyPresetsToElements]);
 
     // 服务器状态检查（修复位置：不嵌套在错误的回调内部）
     useEffect(() => {
@@ -2154,4 +2269,12 @@ export default function ControlPanel() {
             )}
         </div>
     );
+}
+
+// 元素轨迹/音效预设文件结构
+interface ElementPresetFile {
+    name: string;
+    updatedAt: number;
+    trajectory?: ProcessedElement['trajectory'];
+    audio?: ProcessedElement['audio'];
 }

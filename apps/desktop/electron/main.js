@@ -12,6 +12,13 @@ try {
 let mainWindow = null;
 let projectionWindow = null;
 
+// 轨迹/音效预设目录（存放元素名称.json）
+const presetsDir = path.join(__dirname, '..', 'presets');
+function ensurePresetsDir() {
+  try { if (!fs.existsSync(presetsDir)) fs.mkdirSync(presetsDir, { recursive: true }); } catch (e) { console.warn('创建预设目录失败:', e.message); }
+}
+ensurePresetsDir();
+
 // IPC通信处理
 ipcMain.on('send-to-projection', (event, data) => {
   if (projectionWindow) {
@@ -60,6 +67,42 @@ ipcMain.handle('save-camera-image', async (_event, { dataUrl, name }) => {
     return { success: true, path: filePath };
   } catch (e) {
     return { success: false, error: e.message };
+  }
+});
+
+// 保存元素预设（轨迹 + 音效）
+ipcMain.handle('save-element-preset', async (_event, { name, data }) => {
+  try {
+    if (!name) throw new Error('missing name');
+    ensurePresetsDir();
+    // 规范化：去掉可能的图片扩展（例如 .png/.jpg）
+    const base = name.replace(/\.[^.]+$/, '');
+    const filePath = path.join(presetsDir, `${base}.json`);
+    fs.writeFileSync(filePath, JSON.stringify({ updatedAt: Date.now(), name: base, ...data }, null, 2), 'utf-8');
+    return { success: true, path: filePath };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
+// 读取全部元素预设
+ipcMain.handle('load-element-presets', async () => {
+  try {
+    ensurePresetsDir();
+    const files = fs.readdirSync(presetsDir).filter(f => f.endsWith('.json'));
+    const presets = [];
+    for (const f of files) {
+      try {
+        const raw = fs.readFileSync(path.join(presetsDir, f), 'utf-8');
+        const obj = JSON.parse(raw);
+        presets.push(obj);
+      } catch (e) {
+        console.warn('读取预设失败:', f, e.message);
+      }
+    }
+    return { success: true, presets };
+  } catch (e) {
+    return { success: false, error: e.message, presets: [] };
   }
 });
 
