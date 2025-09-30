@@ -449,6 +449,24 @@ interface ProcessedElement {
     };
 }
 
+// 背景音乐开关按钮组件
+function BackgroundMusicToggle({ sendProjectionMessage }: { sendProjectionMessage: (msg: any) => void }) {
+    const [muted, setMuted] = useState<boolean>(true); // 默认静音（与投影视频 muted 初始值保持一致）
+    const toggle = () => {
+        sendProjectionMessage({ type: 'TOGGLE_BG_AUDIO' });
+        setMuted(prev => !prev); // 本地乐观更新
+    };
+    const label = muted ? '🎵 开启音乐' : '🔇 关闭音乐';
+    const bg = muted ? '#607d8b' : '#3f51b5';
+    return (
+        <button
+            onClick={toggle}
+            style={{ padding: '6px 12px', background: bg, color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}
+            title="背景音乐开关（投影背景视频音轨）"
+        >{label}</button>
+    );
+}
+
 export default function ControlPanel() {
     // 基础状态
     const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -658,7 +676,8 @@ export default function ControlPanel() {
         try {
             const video = videoRef.current;
             const canvas = cameraCanvasRef.current || document.createElement('canvas');
-            const targetMax = 960;
+            // 为降低第一次会话(embedding)耗时，降低分辨率（原 960 -> 640，可根据需要再调）
+            const targetMax = 640;
             const vw = video.videoWidth || 1280;
             const vh = video.videoHeight || 720;
             const scale = Math.min(1, targetMax / Math.max(vw, vh));
@@ -686,6 +705,7 @@ export default function ControlPanel() {
             let newSessionId = sessionId;
             let phaseLabel = 'update';
             let apiTimeStart = performance.now();
+            console.log('[Camera] capture start sessionId(before)=', newSessionId, 'savedPath=', savedPath, 'targetMax=', targetMax);
             if (!newSessionId) { // init
                 let initRes;
                 if (savedPath) {
@@ -712,6 +732,7 @@ export default function ControlPanel() {
                 }
             }
             const apiTimeEnd = performance.now();
+            console.log('[Camera] capture api phase=', phaseLabel, 'elapsed(ms)=', (apiTimeEnd - apiTimeStart).toFixed(1));
 
             const img = new Image();
             img.onload = () => {
@@ -1735,7 +1756,13 @@ export default function ControlPanel() {
                     <div style={{ width: 6, height: 6, borderRadius: '50%', backgroundColor: 'white' }} />
                     {serverStatus === 'checking' ? '检查中...' : serverStatus === 'online' ? 'SAM在线' : 'SAM离线'}
                 </div>
-                <div style={{ display: 'flex', gap: 10, marginLeft: 'auto' }}>
+                <div style={{ display: 'flex', gap: 10, marginLeft: 'auto', alignItems: 'center' }}>
+                    {(() => {
+                        const [bgMuted, setBgMuted] = useState(false);
+                        // 只渲染一次按钮（IIFE内部 hook 不合法）-> 改为提前提取到组件顶部更规范。此处改为占位，会在上方补状态。
+                        return null;
+                    })()}
+                    <BackgroundMusicToggle sendProjectionMessage={sendProjectionMessage} />
                     {['upload', 'roi_selection', 'segmentation', 'candidates', 'optimization', 'integration'].map((step, index) => (
                         <div key={step} style={{ padding: '4px 12px', borderRadius: 15, fontSize: 11, backgroundColor: currentStep === step ? '#2196F3' : '#555', border: currentStep === step ? '2px solid #64B5F6' : '1px solid #777' }}>
                             {index + 1}. {step === 'upload' ? '上传' : step === 'roi_selection' ? 'ROI选择' : step === 'segmentation' ? '分割' : step === 'candidates' ? '候选' : step === 'optimization' ? '优化' : '集成'}

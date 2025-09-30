@@ -2,7 +2,7 @@ import os
 import shutil
 import base64
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -19,6 +19,8 @@ class Session:
     tmp_dir: Path
     predictor: SamPredictor
     image_name: str  # 用于导出命名（stem）
+    created_at: float = field(default_factory=lambda: __import__('time').time())
+    last_used: float = field(default_factory=lambda: __import__('time').time())
 
 class SamEngine:
     def __init__(self, weights_path: Optional[str] = None, model_type: Optional[str] = None, device: Optional[str] = None):
@@ -28,6 +30,11 @@ class SamEngine:
         if not self.weights_path or not os.path.exists(self.weights_path):
             raise RuntimeError("SAM weights not found. Set SAM_WEIGHTS to a valid .pth file.")
         self.sessions: dict[str, Session] = {}
+        # 最大活跃会话数（超过后自动回收最旧的），避免 GPU / 内存膨胀
+        try:
+            self.max_sessions = int(os.getenv("SAM_MAX_SESSIONS", "2"))
+        except ValueError:
+            self.max_sessions = 2
         import time
         t0 = time.perf_counter()
         self._model = sam_model_registry[self.model_type](checkpoint=self.weights_path).to(self.device)
@@ -92,6 +99,8 @@ class SamEngine:
 
         sess = Session(id=sid, image_bgr=image_bgr, h=h, w=w, tmp_dir=tmp_dir, predictor=predictor, image_name=name)
         self.sessions[sid] = sess
+        self._trim_sessions()  # 确保不会无限增长
+        self._log_memory_state(tag="SessionInit")
         return sess
 
     def update_session_image(self, session_id: str, image_path: str) -> Session:
@@ -128,6 +137,8 @@ class SamEngine:
             except Exception:
                 pass
         # 不重建 predictor，只是更新 image 引用
+        session.last_used = __import__('time').time()
+        self._log_memory_state(tag="UpdateImagePath")
         return session
 
     def update_session_image_b64(self, session_id: str, image_b64: str, max_side: Optional[int] = None) -> Session:
@@ -159,6 +170,8 @@ class SamEngine:
             except Exception:
                 pass
         print(f"[SAM][UpdateImage] sid={session_id[:8]} decode={(t1-t0)*1000:.1f}ms resize={(t2-t1)*1000:.1f}ms embed={(t3-t2)*1000:.1f}ms total={(t3-t0)*1000:.1f}ms resized={resized} shape={session.w}x{session.h}")
+        session.last_used = __import__('time').time()
+        self._log_memory_state(tag="UpdateImageB64")
         return session
 
     def clear_all_sessions(self):
@@ -170,6 +183,56 @@ class SamEngine:
             except Exception:
                 pass
         self.sessions.clear()
+        self._torch_empty_cache()
+        print("[SAM][GC] Cleared all sessions")
+
+    # ---------------- 内部辅助 -----------------
+    def _trim_sessions(self):
+        if self.max_sessions <= 0:
+            return
+        if len(self.sessions) <= self.max_sessions:
+            return
+        # 根据 last_used 排序，淘汰最久未使用的
+        ordered = sorted(self.sessions.values(), key=lambda s: s.last_used)
+        excess = len(self.sessions) - self.max_sessions
+        to_remove = ordered[:excess]
+        for sess in to_remove:
+            try:
+                if sess.tmp_dir.exists():
+                    shutil.rmtree(sess.tmp_dir, ignore_errors=True)
+            except Exception:
+                pass
+            # 显式释放 predictor 引用
+            try:
+                del sess.predictor
+            except Exception:
+                pass
+            self.sessions.pop(sess.id, None)
+            print(f"[SAM][Trim] Removed session {sess.id[:8]}")
+        if to_remove:
+            self._torch_empty_cache()
+
+    def _torch_empty_cache(self):
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def _log_memory_state(self, tag: str):
+        try:
+            import psutil, torch, time
+            proc = psutil.Process(os.getpid())
+            rss = proc.memory_info().rss / 1024 / 1024
+            txt = f"[SAM][Mem][{tag}] sessions={len(self.sessions)} rss={rss:.1f}MB"
+            if torch.cuda.is_available():
+                alloc = torch.cuda.memory_allocated() / 1024 / 1024
+                reserved = torch.cuda.memory_reserved() / 1024 / 1024
+                txt += f" gpu_alloc={alloc:.1f}MB gpu_reserved={reserved:.1f}MB"
+            print(txt)
+        except Exception:
+            pass
 
     def segment(self, session_id: str, points, labels, box, multimask: bool, top_n: int, smooth: bool):
         sess = self.sessions.get(session_id)

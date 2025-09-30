@@ -104,35 +104,16 @@ export default function ProjectionScreen() {
         return () => window.removeEventListener('keydown', handler);
     }, []);
 
-    // 解除视频静音并尝试播放音频
+    // 默认静音播放：仅启动播放，不自动取消静音；用户通过按钮切换
     useEffect(() => {
         const v = videoRef.current;
         if (!v) return;
-        const tryPlay = () => {
-            try {
-                v.muted = false;
-                const p = v.play();
-                if (p && typeof p.then === 'function') {
-                    p.catch(err => {
-                        console.warn('[Projection] 自动播放受限，等待首次用户交互解锁音频:', err?.message || err);
-                        const once = () => {
-                            try { v.muted = false; v.play().catch(()=>{}); } catch {}
-                            window.removeEventListener('click', once);
-                            window.removeEventListener('keydown', once);
-                        };
-                        window.addEventListener('click', once, { once: true });
-                        window.addEventListener('keydown', once, { once: true });
-                    });
-                }
-            } catch (e) {
-                console.warn('[Projection] 播放背景视频失败:', e);
-            }
+        const startPlay = () => {
+            try { v.play().catch(() => { }); } catch { }
         };
-        // 如果已经可以播放就直接尝试，否则等 canplay 事件
-        if (v.readyState >= 2) {
-            tryPlay();
-        } else {
-            const onCanPlay = () => { tryPlay(); };
+        if (v.readyState >= 2) startPlay();
+        else {
+            const onCanPlay = () => { startPlay(); };
             v.addEventListener('canplay', onCanPlay, { once: true });
             return () => v.removeEventListener('canplay', onCanPlay);
         }
@@ -141,17 +122,32 @@ export default function ProjectionScreen() {
     // 允许主窗口通过 IPC 控制（可在 ControlPanel 发送 {type:'TOGGLE_STATS', value?:boolean}）
     useEffect(() => {
         const api = (window as any).electronAPI;
-        if (!api?.onFromMain) return;
-        const listener = (_: any, message: any) => {
+        if (!api?.onProjectionMessage) return;
+        const listener = (_event: any, message: any) => {
             try {
-                const msg = message || _; // 兼容不同 preload 封装
+                const msg = message; // projection-message 通道直接传 data
                 if (msg?.type === 'TOGGLE_STATS') {
                     if (typeof msg.value === 'boolean') setShowStats(msg.value); else setShowStats(prev => !prev);
                 }
+                if (msg?.type === 'SET_BG_AUDIO') {
+                    const v = videoRef.current;
+                    if (v) {
+                        if (typeof msg.enabled === 'boolean') {
+                            v.muted = !msg.enabled;
+                        }
+                        if (typeof msg.volume === 'number') {
+                            v.volume = Math.min(1, Math.max(0, msg.volume));
+                        }
+                    }
+                }
+                if (msg?.type === 'TOGGLE_BG_AUDIO') {
+                    const v = videoRef.current;
+                    if (v) v.muted = !v.muted;
+                }
             } catch { }
         };
-        api.onFromMain(listener);
-        return () => { try { api.removeFromMain?.(listener); } catch { } };
+        api.onProjectionMessage(listener);
+        return () => { try { api.removeAllListeners?.('projection-message'); } catch { } };
     }, []);
 
     // 音频控制
@@ -1245,6 +1241,7 @@ export default function ProjectionScreen() {
                 src={forestState.backgroundVideo}
                 autoPlay
                 loop
+                muted
                 playsInline
                 onLoadedData={handleVideoLoaded}
                 onError={handleVideoError}

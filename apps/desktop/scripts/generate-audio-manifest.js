@@ -28,7 +28,7 @@ function main() {
         return;
     }
 
-    const files = walk(audioDir, ['.mp3', '.wav', '.ogg']).map(p => {
+    const files = walk(audioDir, ['.mp3', '.wav', '.ogg', '.MP3']).map(p => {
         // Convert absolute path to public-relative (prefix with ./audio for renderer usage)
         const rel = path.relative(publicDir, p).replace(/\\/g, '/');
         return `./${rel}`;
