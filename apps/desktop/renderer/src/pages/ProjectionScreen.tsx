@@ -21,6 +21,8 @@ interface Element {
         duration: number;
         loop?: boolean;
         mirrorEnd?: boolean; // 终点镜像往返
+        smooth?: boolean; // 平滑曲线
+        tension?: number; // 平滑张力 0..1
         easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
         effectType?: 'none' | 'breathing' | 'swinging';
         effectContinue?: boolean;
@@ -588,34 +590,50 @@ export default function ProjectionScreen() {
 
                     const keyframes = traj.keyframes;
                     if (keyframes.length > 1) {
-                        // 找到当前进度对应的关键帧
-                        let startFrame = keyframes[0];
-                        let endFrame = keyframes[keyframes.length - 1];
-
-                        // 覆盖最后一段：当 easedProgress === 1 精确匹配到最后一段终点
-                        for (let i = 0; i < keyframes.length - 1; i++) {
-                            const a = keyframes[i].time;
-                            const b = keyframes[i + 1].time;
-                            if (easedProgress >= a && (easedProgress <= b || (i === keyframes.length - 2 && easedProgress >= b))) {
-                                startFrame = keyframes[i];
-                                endFrame = keyframes[i + 1];
-                                break;
+                        if (traj.smooth && keyframes.length >= 3) {
+                            // 使用 Catmull-Rom 样条平滑位置：找到所在区间索引 i (keyframes[i] -> keyframes[i+1])
+                            let segIndex = 0;
+                            for (let i = 0; i < keyframes.length - 1; i++) {
+                                const a = keyframes[i].time;
+                                const b = keyframes[i + 1].time;
+                                if (easedProgress >= a && (easedProgress <= b || (i === keyframes.length - 2 && easedProgress >= b))) { segIndex = i; break; }
                             }
-                        }
-
-                        // 段内线性插值（整体节奏已做缓动）
-                        const frameProgress = (easedProgress - startFrame.time) / Math.max(1e-6, (endFrame.time - startFrame.time));
-                        currentPos.x = lerp(startFrame.x, endFrame.x, frameProgress);
-                        currentPos.y = lerp(startFrame.y, endFrame.y, frameProgress);
-
-                        if (startFrame.scale !== undefined && endFrame.scale !== undefined) {
-                            currentScale = lerp(startFrame.scale, endFrame.scale, frameProgress);
-                        }
-                        if (startFrame.rotation !== undefined && endFrame.rotation !== undefined) {
-                            currentRotation = lerp(startFrame.rotation, endFrame.rotation, frameProgress);
-                        }
-                        if (startFrame.opacity !== undefined && endFrame.opacity !== undefined) {
-                            currentOpacity = lerp(startFrame.opacity, endFrame.opacity, frameProgress);
+                            const kf0 = keyframes[Math.max(0, segIndex - 1)];
+                            const kf1 = keyframes[segIndex];
+                            const kf2 = keyframes[Math.min(keyframes.length - 1, segIndex + 1)];
+                            const kf3 = keyframes[Math.min(keyframes.length - 1, segIndex + 2)];
+                            const localT = (easedProgress - kf1.time) / Math.max(1e-6, (kf2.time - kf1.time)); // 0..1
+                            const tension = Math.min(1, Math.max(0, traj.tension ?? 0));
+                            // Cardinal / Hermite 形式：使用切向量 m1,m2 受 (1 - tension) 缩放
+                            const m1x = (1 - tension) * (kf2.x - kf0.x) / 2; const m1y = (1 - tension) * (kf2.y - kf0.y) / 2;
+                            const m2x = (1 - tension) * (kf3.x - kf1.x) / 2; const m2y = (1 - tension) * (kf3.y - kf1.y) / 2;
+                            const t2 = localT * localT; const t3 = t2 * localT;
+                            const h00 = 2 * t3 - 3 * t2 + 1;
+                            const h10 = t3 - 2 * t2 + localT;
+                            const h01 = -2 * t3 + 3 * t2;
+                            const h11 = t3 - t2;
+                            currentPos.x = h00 * kf1.x + h10 * m1x + h01 * kf2.x + h11 * m2x;
+                            currentPos.y = h00 * kf1.y + h10 * m1y + h01 * kf2.y + h11 * m2y;
+                            // 其它属性仍按线性段内插值（避免过度拟合导致 scale/rotation 抖动）
+                            const startFrame = kf1; const endFrame = kf2;
+                            const frameProgress = localT;
+                            if (startFrame.scale !== undefined && endFrame.scale !== undefined) currentScale = lerp(startFrame.scale, endFrame.scale, frameProgress);
+                            if (startFrame.rotation !== undefined && endFrame.rotation !== undefined) currentRotation = lerp(startFrame.rotation, endFrame.rotation, frameProgress);
+                            if (startFrame.opacity !== undefined && endFrame.opacity !== undefined) currentOpacity = lerp(startFrame.opacity, endFrame.opacity, frameProgress);
+                        } else {
+                            // 原线性段插值
+                            let startFrame = keyframes[0];
+                            let endFrame = keyframes[keyframes.length - 1];
+                            for (let i = 0; i < keyframes.length - 1; i++) {
+                                const a = keyframes[i].time; const b = keyframes[i + 1].time;
+                                if (easedProgress >= a && (easedProgress <= b || (i === keyframes.length - 2 && easedProgress >= b))) { startFrame = keyframes[i]; endFrame = keyframes[i + 1]; break; }
+                            }
+                            const frameProgress = (easedProgress - startFrame.time) / Math.max(1e-6, (endFrame.time - startFrame.time));
+                            currentPos.x = lerp(startFrame.x, endFrame.x, frameProgress);
+                            currentPos.y = lerp(startFrame.y, endFrame.y, frameProgress);
+                            if (startFrame.scale !== undefined && endFrame.scale !== undefined) currentScale = lerp(startFrame.scale, endFrame.scale, frameProgress);
+                            if (startFrame.rotation !== undefined && endFrame.rotation !== undefined) currentRotation = lerp(startFrame.rotation, endFrame.rotation, frameProgress);
+                            if (startFrame.opacity !== undefined && endFrame.opacity !== undefined) currentOpacity = lerp(startFrame.opacity, endFrame.opacity, frameProgress);
                         }
                     }
 

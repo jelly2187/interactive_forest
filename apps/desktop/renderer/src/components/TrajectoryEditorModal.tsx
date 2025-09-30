@@ -25,6 +25,8 @@ interface TrajectoryEditorModalProps {
             duration: number;
             loop?: boolean;
             mirrorEnd?: boolean; // 新增：往返镜像
+            smooth?: boolean; // 新增：平滑曲线
+            tension?: number; // 新增：平滑张力 (0=松弛Catmull-Rom, 1=直线)
             easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
             effectType?: 'none' | 'breathing' | 'swinging';
             effectContinue?: boolean;
@@ -47,9 +49,11 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
     // 轨迹循环默认不勾选；循环语义为往返（起点->终点->起点）
     const [loop, setLoop] = useState<boolean>(element.trajectory?.loop ?? false);
     const [mirrorEnd, setMirrorEnd] = useState<boolean>((element as any).trajectory?.mirrorEnd ?? false);
+    const [smooth, setSmooth] = useState<boolean>((element as any).trajectory?.smooth ?? true);
+    const [tension, setTension] = useState<number>((element as any).trajectory?.tension ?? 0); // 0..1
     const [easing, setEasing] = useState<string>((element as any).trajectory?.easing ?? 'easeInOut');
     const [effectType, setEffectType] = useState<'none' | 'breathing' | 'swinging'>((element as any).trajectory?.effectType ?? 'none');
-    const [effectContinue, setEffectContinue] = useState<boolean>((element as any).trajectory?.effectContinue ?? false);
+    const [effectContinue, setEffectContinue] = useState<boolean>((element as any).trajectory?.effectContinue ?? true);
     const [effectPeriodMs, setEffectPeriodMs] = useState<number>((element as any).trajectory?.effectPeriodMs ?? 2000);
     const [effectBreathAmp, setEffectBreathAmp] = useState<number>((element as any).trajectory?.effectBreathAmp ?? 0.08);
     const [effectSwingDeg, setEffectSwingDeg] = useState<number>((element as any).trajectory?.effectSwingDeg ?? 10);
@@ -169,14 +173,78 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
             for (let y = 0; y <= canvas.height; y += 20) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); ctx.stroke(); }
         }
 
-        // 路径线
+        // 路径线（支持平滑曲线）
         if (keyframes.length >= 2) {
-            ctx.strokeStyle = '#2196F3'; ctx.lineWidth = 3; ctx.beginPath();
+            // 1) 先画关键帧直线辅助（淡）
+            ctx.save(); ctx.strokeStyle = 'rgba(120,160,255,0.25)'; ctx.lineWidth = 1; ctx.beginPath();
             keyframes.forEach((kf, i) => {
                 const px = (kf.x / 1920) * canvas.width; const py = (kf.y / 1080) * canvas.height;
                 if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
-            });
-            ctx.stroke();
+            }); ctx.stroke(); ctx.restore();
+
+            // 2) 主轨迹（平滑或折线）
+            ctx.strokeStyle = '#2196F3'; ctx.lineWidth = 2; ctx.beginPath();
+            if (!smooth || keyframes.length < 3) {
+                keyframes.forEach((kf, i) => {
+                    const px = (kf.x / 1920) * canvas.width; const py = (kf.y / 1080) * canvas.height;
+                    if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+                });
+                ctx.stroke();
+            } else {
+                const pts = keyframes.map(kf => ({ x: (kf.x / 1920) * canvas.width, y: (kf.y / 1080) * canvas.height }));
+                const T = Math.min(1, Math.max(0, tension)); // clamp
+                for (let i = 0; i < pts.length - 1; i++) {
+                    const p0 = pts[i - 1] || pts[i];
+                    const p1 = pts[i];
+                    const p2 = pts[i + 1];
+                    const p3 = pts[i + 2] || pts[i + 1];
+                    if (i === 0) ctx.moveTo(p1.x, p1.y);
+                    // Cardinal (tension) to Bezier: m1=(1-T)/2*(p2-p0); m2=(1-T)/2*(p3-p1); c1=p1+m1/3; c2=p2-m2/3
+                    const m1x = (1 - T) * (p2.x - p0.x) / 2; const m1y = (1 - T) * (p2.y - p0.y) / 2;
+                    const m2x = (1 - T) * (p3.x - p1.x) / 2; const m2y = (1 - T) * (p3.y - p1.y) / 2;
+                    const c1x = p1.x + m1x / 3; const c1y = p1.y + m1y / 3;
+                    const c2x = p2.x - m2x / 3; const c2y = p2.y - m2y / 3;
+                    ctx.bezierCurveTo(c1x, c1y, c2x, c2y, p2.x, p2.y);
+                }
+                ctx.stroke();
+
+                // 3) 采样虚线路径（实际运行采样）
+                ctx.save();
+                ctx.strokeStyle = 'rgba(33,150,243,0.5)';
+                ctx.lineWidth = 1.5;
+                ctx.setLineDash([6, 6]);
+                ctx.beginPath();
+                const samplePerSeg = 16; // 每段采样点数
+                let first = true;
+                const evalPoint = (p0: any, p1: any, p2: any, p3: any, t: number) => { // Hermite 基函数
+                    const Tt = Math.min(1, Math.max(0, tension));
+                    const m1x = (1 - Tt) * (p2.x - p0.x) / 2; const m1y = (1 - Tt) * (p2.y - p0.y) / 2;
+                    const m2x = (1 - Tt) * (p3.x - p1.x) / 2; const m2y = (1 - Tt) * (p3.y - p1.y) / 2;
+                    const t2 = t * t, t3 = t2 * t;
+                    const h00 = 2 * t3 - 3 * t2 + 1;
+                    const h10 = t3 - 2 * t2 + t;
+                    const h01 = -2 * t3 + 3 * t2;
+                    const h11 = t3 - t2;
+                    return {
+                        x: h00 * p1.x + h10 * m1x + h01 * p2.x + h11 * m2x,
+                        y: h00 * p1.y + h10 * m1y + h01 * p2.y + h11 * m2y
+                    };
+                };
+                for (let i = 0; i < pts.length - 1; i++) {
+                    const p0 = pts[i - 1] || pts[i];
+                    const p1 = pts[i];
+                    const p2 = pts[i + 1];
+                    const p3 = pts[i + 2] || pts[i + 1];
+                    for (let s = 0; s <= samplePerSeg; s++) {
+                        const t = s / samplePerSeg;
+                        const pt = evalPoint(p0, p1, p2, p3, t);
+                        if (first) { ctx.moveTo(pt.x, pt.y); first = false; }
+                        else ctx.lineTo(pt.x, pt.y);
+                    }
+                }
+                ctx.stroke();
+                ctx.restore();
+            }
         }
 
         // 关键帧标记（统一使用圆点）
@@ -213,8 +281,22 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                 if (effectType === 'breathing') sc *= (1 + effectBreathAmp * wave); else if (effectType === 'swinging') rot += effectSwingDeg * wave;
             }
             const fx = (pos.x / 1920) * canvas.width; const fy = (pos.y / 1080) * canvas.height;
-            const img = elementImageRef.current; const base = 120; let w = base * sc; let h = base * sc;
-            if (img) { const iw = img.naturalWidth || base; const ih = img.naturalHeight || base; const asp = iw / ih; h = base * sc; w = h * asp; }
+            const img = elementImageRef.current;
+            // 舞台使用 sx = canvas.width/1920, sy = canvas.height/1080，保持原始像素在各轴独立缩放；我们在预览中采用相同逻辑。
+            const sx = canvas.width / 1920;
+            const sy = canvas.height / 1080;
+            let baseW: number; let baseH: number;
+            // 若存在 originalROI（舞台可能使用的裁剪尺寸），优先使用
+            const roi = (element as any).originalROI;
+            if (roi && roi.width && roi.height) {
+                baseW = roi.width; baseH = roi.height;
+            } else if (img && img.naturalWidth && img.naturalHeight) {
+                baseW = img.naturalWidth; baseH = img.naturalHeight;
+            } else {
+                baseW = 200; baseH = 200; // 占位
+            }
+            const w = baseW * sc * sx;
+            const h = baseH * sc * sy;
             ctx.save(); ctx.translate(fx, fy); ctx.rotate(rot * Math.PI / 180); ctx.globalAlpha = op;
             // 与投影端一致：loop + mirrorEnd 时在返程段水平镜像（使用本地 state，勾选后即刻生效）
             if (loop && mirrorEnd) {
@@ -227,10 +309,10 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                     if (!forward) ctx.scale(-1, 1);
                 }
             }
-            if (img) ctx.drawImage(img, -w / 2, -h / 2, w, h); else { ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.strokeStyle = '#FF5722'; ctx.lineWidth = 2; ctx.beginPath(); ctx.rect(-w / 2, -h / 2, w, h); ctx.fill(); ctx.stroke(); }
+            if (img) ctx.drawImage(img, -w / 2, -h / 2, w, h); else { ctx.fillStyle = 'rgba(255,255,255,0.15)'; ctx.strokeStyle = '#FF5722'; ctx.lineWidth = 2; ctx.beginPath(); ctx.rect(-w / 2, -h / 2, w, h); ctx.fill(); ctx.stroke(); }
             ctx.restore();
         }
-    }, [keyframes, selectedKeyframe, currentTime, duration, applyEasing, element.position.x, element.position.y, element.scale, element.rotation, globalScaleFactor, effectType, effectBreathAmp, effectSwingDeg, effectPeriodMs, playElapsed, isPlaying, loop, mirrorEnd]);
+    }, [keyframes, selectedKeyframe, currentTime, duration, applyEasing, element.position.x, element.position.y, element.scale, element.rotation, globalScaleFactor, effectType, effectBreathAmp, effectSwingDeg, effectPeriodMs, playElapsed, isPlaying, loop, mirrorEnd, smooth, tension]);
 
     useEffect(() => {
         drawTrajectoryPreview();
@@ -325,6 +407,8 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
             duration,
             loop,
             mirrorEnd,
+            tension,
+            smooth,
             easing,
             effectType,
             effectContinue,
@@ -410,41 +494,27 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                     />
                 </div>
 
-                {/* 动画控制 */}
-                <div style={{ marginBottom: '20px', display: 'flex', gap: '10px', alignItems: 'center' }}>
-                    <div style={{ flex: 1 }}>
-                        <label style={{ display: 'block', marginBottom: '4px', fontSize: '14px' }}>
-                            动画时长: {duration}ms
-                        </label>
-                        <input
-                            type="range"
-                            min="1000"
-                            max="10000"
-                            step="500"
-                            value={duration}
-                            onChange={(e) => setDuration(parseInt(e.target.value))}
-                            style={{ width: '100%' }}
-                        />
+                {/* 动画控制行 1 */}
+                <div style={{ marginBottom: 8, display: 'flex', gap: '14px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <div style={{ flex: 1, minWidth: 230 }}>
+                        <label style={{ display: 'block', marginBottom: 4, fontSize: 14 }}>动画时长: {duration}ms</label>
+                        <input type="range" min="1000" max="15000" step="500" value={duration} onChange={(e) => setDuration(parseInt(e.target.value))} style={{ width: '100%' }} />
+                        <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 10, opacity: 0.6, marginTop: 2 }}>
+                            <span>1s</span><span>15s</span>
+                        </div>
                     </div>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
-                        <input
-                            type="checkbox"
-                            checked={loop}
-                            onChange={(e) => {
-                                const v = e.target.checked;
-                                setLoop(v);
-                                if (v && effectContinue) setEffectContinue(false);
-                            }}
-                        /> 循环（往返）
+                        <input type="checkbox" checked={loop} onChange={(e) => { const v = e.target.checked; setLoop(v); if (v && effectContinue) setEffectContinue(false); }} /> 循环（往返）
                     </label>
-                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, opacity: loop ? 1 : 0.5 }} title="启用后：每次到达路径终点将水平镜像翻转一次，实现更自然的往返效果">
-                        <input
-                            type="checkbox"
-                            disabled={!loop}
-                            checked={mirrorEnd}
-                            onChange={(e) => setMirrorEnd(e.target.checked)}
-                        /> 终点镜像
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, opacity: loop ? 1 : 0.5 }} title="启用后：每次到达路径终点将水平镜像翻转一次">
+                        <input type="checkbox" disabled={!loop} checked={mirrorEnd} onChange={(e) => setMirrorEnd(e.target.checked)} /> 终点镜像
                     </label>
+                    <button onClick={isPlaying ? stopAnimation : playAnimation} style={{ padding: '8px 16px', backgroundColor: isPlaying ? '#f44336' : '#4CAF50', color: '#fff', border: 'none', borderRadius: 4, cursor: 'pointer' }}>
+                        {isPlaying ? '⏹️ 停止' : '▶️ 预览'}
+                    </button>
+                </div>
+                {/* 动画控制行 2：速度曲线 / 平滑 */}
+                <div style={{ marginBottom: '20px', display: 'flex', gap: '20px', alignItems: 'center', flexWrap: 'wrap' }}>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                         速度曲线:
                         <select value={easing} onChange={(e) => setEasing(e.target.value)} style={{ background: '#1e1e2f', color: '#fff', border: '1px solid #555', borderRadius: 4, padding: '2px 6px' }}>
@@ -454,19 +524,18 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                             <option value="easeOut">缓出</option>
                         </select>
                     </label>
-                    <button
-                        onClick={isPlaying ? stopAnimation : playAnimation}
-                        style={{
-                            padding: '8px 16px',
-                            backgroundColor: isPlaying ? '#f44336' : '#4CAF50',
-                            color: 'white',
-                            border: 'none',
-                            borderRadius: '4px',
-                            cursor: 'pointer'
-                        }}
-                    >
-                        {isPlaying ? '⏹️ 停止' : '▶️ 预览'}
-                    </button>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }} title="使用 Catmull-Rom 平滑曲线让路径更自然">
+                        <input type="checkbox" checked={smooth} onChange={(e) => setSmooth(e.target.checked)} /> 平滑
+                    </label>
+                    {smooth && (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                            <div style={{ display: 'flex', flexDirection: 'column', width: 140 }}>
+                                <label style={{ fontSize: 10, opacity: 0.8 }}>张力: {tension.toFixed(2)}</label>
+                                <input type="range" min={0} max={1} step={0.01} value={tension} onChange={(e) => setTension(parseFloat(e.target.value))} />
+                            </div>
+                            <div style={{ fontSize: 10, opacity: 0.55, maxWidth: 150, lineHeight: 1.3 }}>0 更柔顺 / 1 更接近折线</div>
+                        </div>
+                    )}
                 </div>
 
                 {/* 全局尺寸调整 */}

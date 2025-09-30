@@ -106,10 +106,27 @@ ipcMain.handle('load-element-presets', async () => {
   }
 });
 
+// 删除元素对应的预设文件（若存在）
+ipcMain.handle('delete-element-preset', async (_event, { name }) => {
+  try {
+    if (!name) throw new Error('missing name');
+    ensurePresetsDir();
+    const base = name.replace(/\.[^.]+$/, '');
+    const filePath = path.join(presetsDir, `${base}.json`);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      return { success: true, removed: true };
+    }
+    return { success: true, removed: false };
+  } catch (e) {
+    return { success: false, error: e.message };
+  }
+});
+
 function createMainWindow() {
   mainWindow = new BrowserWindow({
-    width: 1280,
-    height: 720,
+    width: 1920,
+    height: 1080,
     backgroundColor: "#000000",
     autoHideMenuBar: true,
     // fullscreen: true,  // 暂时注释掉全屏模式，便于调试

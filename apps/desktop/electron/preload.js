@@ -17,5 +17,6 @@ contextBridge.exposeInMainWorld("electronAPI", {
     removeAllListeners: (channel) => ipcRenderer.removeAllListeners(channel),
     saveCameraImage: (dataUrl, name) => ipcRenderer.invoke('save-camera-image', { dataUrl, name }),
     saveElementPreset: (name, data) => ipcRenderer.invoke('save-element-preset', { name, data }),
-    loadElementPresets: () => ipcRenderer.invoke('load-element-presets')
+    loadElementPresets: () => ipcRenderer.invoke('load-element-presets'),
+    deleteElementPreset: (name) => ipcRenderer.invoke('delete-element-preset', { name })
 });

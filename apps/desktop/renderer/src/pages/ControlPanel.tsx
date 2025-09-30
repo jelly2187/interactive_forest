@@ -2225,11 +2225,18 @@ export default function ControlPanel() {
                                                     )}
                                                     <button style={{ flex: 1, padding: 4, fontSize: 9, backgroundColor: '#f44336', color: 'white', border: 'none', borderRadius: 3, cursor: 'pointer' }} onClick={async () => {
                                                         if (element.published) { sendProjectionMessage({ type: 'REMOVE_ELEMENT', data: { id: element.id } }); }
-                                                        // 提取文件名（只删除我们生成的 seg_ 前缀文件）
+                                                        // 删除图像资源（仅 seg_ 前缀）
                                                         const base = element.image.split('/').pop();
                                                         if (base && base.startsWith('seg_')) {
                                                             const res = await apiService.deleteAsset(base);
                                                             if (!res.success) console.warn('后端删除文件失败', base, res.error);
+                                                        }
+                                                        // 删除本地预设 JSON（使用元素 name 规范化）
+                                                        try {
+                                                            const rawName = element.name || '';
+                                                            (window as any).electronAPI?.deleteElementPreset?.(rawName);
+                                                        } catch (e) {
+                                                            console.warn('删除预设文件失败', e);
                                                         }
                                                         setProcessedElements(prev => prev.filter(el => el.id !== element.id));
                                                     }}>🗑️ 删除</button>
