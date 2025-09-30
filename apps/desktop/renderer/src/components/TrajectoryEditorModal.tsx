@@ -24,6 +24,7 @@ interface TrajectoryEditorModalProps {
             startTime: number;
             duration: number;
             loop?: boolean;
+            mirrorEnd?: boolean; // 新增：往返镜像
             easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
             effectType?: 'none' | 'breathing' | 'swinging';
             effectContinue?: boolean;
@@ -45,6 +46,7 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
     const [currentTime, setCurrentTime] = useState(0);
     // 轨迹循环默认不勾选；循环语义为往返（起点->终点->起点）
     const [loop, setLoop] = useState<boolean>(element.trajectory?.loop ?? false);
+    const [mirrorEnd, setMirrorEnd] = useState<boolean>((element as any).trajectory?.mirrorEnd ?? false);
     const [easing, setEasing] = useState<string>((element as any).trajectory?.easing ?? 'easeInOut');
     const [effectType, setEffectType] = useState<'none' | 'breathing' | 'swinging'>((element as any).trajectory?.effectType ?? 'none');
     const [effectContinue, setEffectContinue] = useState<boolean>((element as any).trajectory?.effectContinue ?? false);
@@ -214,10 +216,21 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
             const img = elementImageRef.current; const base = 120; let w = base * sc; let h = base * sc;
             if (img) { const iw = img.naturalWidth || base; const ih = img.naturalHeight || base; const asp = iw / ih; h = base * sc; w = h * asp; }
             ctx.save(); ctx.translate(fx, fy); ctx.rotate(rot * Math.PI / 180); ctx.globalAlpha = op;
+            // 与投影端一致：loop + mirrorEnd 时在返程段水平镜像（使用本地 state，勾选后即刻生效）
+            if (loop && mirrorEnd) {
+                const total = duration;
+                if (total > 0) {
+                    // 注意：currentTime 在往返时被压缩到 [0,duration]（反向阶段也映射到 0→duration），
+                    // 用它无法区分前进/返回。这里改用 playElapsed（真实累计时间）来判断当前是否处于返回段。
+                    const cycle = playElapsed % (total * 2); // ms
+                    const forward = cycle <= total; // 0..total 前进，total..2*total 返回
+                    if (!forward) ctx.scale(-1, 1);
+                }
+            }
             if (img) ctx.drawImage(img, -w / 2, -h / 2, w, h); else { ctx.fillStyle = 'rgba(255,255,255,0.2)'; ctx.strokeStyle = '#FF5722'; ctx.lineWidth = 2; ctx.beginPath(); ctx.rect(-w / 2, -h / 2, w, h); ctx.fill(); ctx.stroke(); }
             ctx.restore();
         }
-    }, [keyframes, selectedKeyframe, currentTime, duration, applyEasing, element.position.x, element.position.y, element.scale, element.rotation, globalScaleFactor, effectType, effectBreathAmp, effectSwingDeg, effectPeriodMs, playElapsed, isPlaying]);
+    }, [keyframes, selectedKeyframe, currentTime, duration, applyEasing, element.position.x, element.position.y, element.scale, element.rotation, globalScaleFactor, effectType, effectBreathAmp, effectSwingDeg, effectPeriodMs, playElapsed, isPlaying, loop, mirrorEnd]);
 
     useEffect(() => {
         drawTrajectoryPreview();
@@ -311,6 +324,7 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
             startTime: 0,
             duration,
             loop,
+            mirrorEnd,
             easing,
             effectType,
             effectContinue,
@@ -422,6 +436,14 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
                                 if (v && effectContinue) setEffectContinue(false);
                             }}
                         /> 循环（往返）
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, opacity: loop ? 1 : 0.5 }} title="启用后：每次到达路径终点将水平镜像翻转一次，实现更自然的往返效果">
+                        <input
+                            type="checkbox"
+                            disabled={!loop}
+                            checked={mirrorEnd}
+                            onChange={(e) => setMirrorEnd(e.target.checked)}
+                        /> 终点镜像
                     </label>
                     <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                         速度曲线:

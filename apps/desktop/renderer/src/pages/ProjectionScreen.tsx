@@ -20,6 +20,7 @@ interface Element {
         startTime: number;
         duration: number;
         loop?: boolean;
+        mirrorEnd?: boolean; // 终点镜像往返
         easing?: 'linear' | 'easeIn' | 'easeOut' | 'easeInOut';
         effectType?: 'none' | 'breathing' | 'swinging';
         effectContinue?: boolean;
@@ -676,6 +677,17 @@ export default function ProjectionScreen() {
                 // 将虚拟坐标(1920x1080)映射到实际画布尺寸
                 ctx.translate(currentPos.x * sx, currentPos.y * sy);
                 ctx.rotate(currentRotation);
+                // mirrorEnd 水平翻转逻辑（仅往返循环启用镜像时进入反向段）
+                let mirrorApplied = false;
+                if (element.trajectory?.loop && element.trajectory?.mirrorEnd) {
+                    const duration = Math.max(1, element.trajectory.duration || 1);
+                    const cycle = (now - element.trajectory.startTime) % (duration * 2);
+                    const forward = cycle <= duration; // 正向
+                    if (!forward) { // 反向段：水平镜像
+                        ctx.scale(-1, 1);
+                        mirrorApplied = true;
+                    }
+                }
                 ctx.scale(currentScale, currentScale);
 
                 // 绘制元素图像
@@ -696,6 +708,7 @@ export default function ProjectionScreen() {
                             const roi = (element as any).originalROI;
                             ctx.drawImage(cachedImage, -roi.width / 2, -roi.height / 2, roi.width, roi.height);
                         } else {
+                            // 如果已镜像，绘制区域仍然以中心为基准，无需额外位移修正
                             ctx.drawImage(cachedImage, -imgWidth / 2, -imgHeight / 2, imgWidth, imgHeight);
                         }
                     } else {
