@@ -32,6 +32,11 @@ ipcMain.on('send-to-main', (event, data) => {
   }
 });
 
+// 退出程序请求
+ipcMain.on('app-quit', () => {
+  try { app.quit(); } catch (e) { console.warn('app quit failed', e.message); }
+});
+
 // 背景快照请求：从主窗口请求，转发给投影窗口
 ipcMain.on('request-background', () => {
   if (projectionWindow) {

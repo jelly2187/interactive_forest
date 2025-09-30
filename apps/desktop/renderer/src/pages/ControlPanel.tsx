@@ -1872,6 +1872,15 @@ export default function ControlPanel() {
                     {serverStatus === 'checking' ? '检查中...' : serverStatus === 'online' ? 'SAM在线' : 'SAM离线'}
                 </div>
                 <div style={{ display: 'flex', gap: 10, marginLeft: 'auto', alignItems: 'center' }}>
+                    <button
+                        onClick={() => {
+                            if (confirm('确定要退出程序吗？')) {
+                                try { (window as any).electronAPI?.appQuit?.(); } catch { }
+                            }
+                        }}
+                        style={{ padding: '6px 12px', background: '#e53935', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer', fontSize: 12, fontWeight: 'bold' }}
+                        title="关闭应用程序"
+                    >⛔ 退出</button>
                     {(() => {
                         const [bgMuted, setBgMuted] = useState(false);
                         // 只渲染一次按钮（IIFE内部 hook 不合法）-> 改为提前提取到组件顶部更规范。此处改为占位，会在上方补状态。

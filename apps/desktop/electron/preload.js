@@ -19,4 +19,5 @@ contextBridge.exposeInMainWorld("electronAPI", {
     saveElementPreset: (name, data) => ipcRenderer.invoke('save-element-preset', { name, data }),
     loadElementPresets: () => ipcRenderer.invoke('load-element-presets'),
     deleteElementPreset: (name) => ipcRenderer.invoke('delete-element-preset', { name })
+    , appQuit: () => ipcRenderer.send('app-quit')
 });
