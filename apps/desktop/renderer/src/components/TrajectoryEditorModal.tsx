@@ -51,8 +51,8 @@ export default function TrajectoryEditorModal({ isOpen, onClose, element, onUpda
     const [mirrorEnd, setMirrorEnd] = useState<boolean>((element as any).trajectory?.mirrorEnd ?? false);
     const [smooth, setSmooth] = useState<boolean>((element as any).trajectory?.smooth ?? true);
     const [tension, setTension] = useState<number>((element as any).trajectory?.tension ?? 0); // 0..1
-    const [easing, setEasing] = useState<string>((element as any).trajectory?.easing ?? 'easeInOut');
-    const [effectType, setEffectType] = useState<'none' | 'breathing' | 'swinging'>((element as any).trajectory?.effectType ?? 'none');
+    const [easing, setEasing] = useState<string>((element as any).trajectory?.easing ?? 'easeIn');
+    const [effectType, setEffectType] = useState<'none' | 'breathing' | 'swinging'>((element as any).trajectory?.effectType ?? 'swinging');
     const [effectContinue, setEffectContinue] = useState<boolean>((element as any).trajectory?.effectContinue ?? true);
     const [effectPeriodMs, setEffectPeriodMs] = useState<number>((element as any).trajectory?.effectPeriodMs ?? 2000);
     const [effectBreathAmp, setEffectBreathAmp] = useState<number>((element as any).trajectory?.effectBreathAmp ?? 0.08);

@@ -4,14 +4,16 @@ __pycache__/
 package-lock.json
 tsconfig.tsbuildinfo
 
-/assets/datasets/
+/assets/output/
+/apps/output/
 /apps/cv_service/app/models
+/apps/cv_service/assets
 /apps/desktop/node_modules/
-/apps/desktop/renderer/public/
 /apps/desktop/presets/
-
-*.png
+/apps/camera/photos/
+/database/output/
+/debug/output/
+/debug/modules/output/
 *.env
 *.log
 *.pptx
-*.jpg
